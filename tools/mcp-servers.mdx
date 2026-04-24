@@ -1,0 +1,127 @@
+---
+title: "Extending ML Intern with external MCP tool servers"
+description: "Add any MCP server to ML Intern's tool set via a config entry, with environment variable substitution and a built-in blocked-tool filter list."
+---
+
+The [Model Context Protocol](https://modelcontextprotocol.io) (MCP) is an open standard that lets AI assistants discover and call tools exposed by external services. ML Intern connects to MCP servers at startup, lists their tools, and makes them available alongside the built-in tool set — no code changes required.
+
+## How MCP tools are loaded
+
+When ML Intern starts, the `ToolRouter` reads the `mcpServers` block from your config file and opens a connection to each server using the [FastMCP](https://github.com/jlowin/fastmcp) client. It then calls `list_tools()`, registers every tool that is not on the blocked list, and logs the result:
+
+```
+Loaded 12 MCP tools: hf_hub_search, model_details, ... (3 disabled)
+```
+
+MCP tool calls flow through the same agentic loop as built-in tools: the LLM decides which tool to invoke, the approval check runs if needed, and the result is added to the conversation context.
+
+## Default configuration
+
+The default config at `configs/main_agent_config.json` pre-configures the official Hugging Face MCP server:
+
+```json
+{
+  "model_name": "bedrock/us.anthropic.claude-opus-4-6-v1",
+  "save_sessions": true,
+  "yolo_mode": false,
+  "confirm_cpu_jobs": true,
+  "mcpServers": {
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    }
+  }
+}
+```
+
+The `hf-mcp-server` entry connects to the HF Hub MCP endpoint. Authentication is handled automatically: ML Intern adds your `HF_TOKEN` as an `Authorization: Bearer` header on all requests to every MCP server.
+
+## Adding an MCP server
+
+Edit `configs/main_agent_config.json` and add an entry to `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    },
+    "your-server-name": {
+      "transport": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${YOUR_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+<Steps>
+  <Step title="Add the server entry">
+    Choose a short, unique key (e.g. `"my-data-server"`). Set `transport` to `"http"` and provide the server's `url`.
+  </Step>
+  <Step title="Add authentication headers (if required)">
+    Place any required headers under `"headers"`. Use `${VARIABLE_NAME}` for values that should be read from environment variables.
+  </Step>
+  <Step title="Set the environment variable">
+    Add the variable to your `.env` file or export it in your shell:
+
+    ```bash
+    YOUR_TOKEN=sk-...
+    ```
+
+    ML Intern substitutes `${YOUR_TOKEN}` at runtime before opening the connection.
+  </Step>
+  <Step title="Restart ML Intern">
+    MCP connections are established at startup. Restart the agent to pick up config changes.
+  </Step>
+</Steps>
+
+## Transport types
+
+Currently, `"http"` (streamable HTTP / SSE) is the supported transport type. This covers the vast majority of publicly hosted MCP servers.
+
+## Environment variable substitution
+
+Any value in the config that matches `${VARIABLE_NAME}` is substituted from the process environment before the value is used. This works in `headers`, `url`, and any other string field in a server entry:
+
+```json
+{
+  "your-server": {
+    "transport": "http",
+    "url": "${MCP_SERVER_URL}",
+    "headers": {
+      "X-Api-Key": "${MY_API_KEY}"
+    }
+  }
+}
+```
+
+<Tip>
+  Keep secrets out of your config file. Always use `${...}` substitution and store the actual values in `.env` or your shell environment. The `.env` file is already listed in `.gitignore` in the ML Intern repo.
+</Tip>
+
+## Blocked tool names
+
+Some tool names provided by MCP servers conflict with built-in tools or expose operations that ML Intern manages internally. These names are always blocked, even if an MCP server offers them:
+
+| Blocked name | Reason |
+|-------------|--------|
+| `hf_jobs` | Built-in tool; MCP duplicate would conflict |
+| `hf_doc_search` | Replaced by the built-in `explore_hf_docs` |
+| `hf_doc_fetch` | Replaced by the built-in `fetch_hf_docs` |
+| `hf_whoami` | Identity is managed internally via the session token |
+
+If an MCP server provides one of these names, it is silently skipped during registration. The log message at startup reports how many tools were disabled for this reason.
+
+## Failure handling
+
+If an MCP server is unreachable or returns an error during startup, ML Intern logs a warning and continues without that server's tools. The agent remains fully functional with the built-in tool set:
+
+```
+WARNING MCP connection failed, continuing without MCP tools: Connection refused
+```
+
+This means a misconfigured MCP server does not prevent ML Intern from starting. Check the server URL and headers if tools from a particular server are not appearing.

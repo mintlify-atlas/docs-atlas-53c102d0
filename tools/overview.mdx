@@ -1,0 +1,91 @@
+---
+title: "ML Intern complete built-in and MCP tools reference"
+description: "Complete reference for all built-in tools available to ML Intern, covering research, compute, Hub management, GitHub search, and MCP extensions."
+---
+
+ML Intern arrives with a rich set of built-in tools that cover the full ML workflow: from mining the literature and inspecting datasets, through writing and testing code in a sandbox, to dispatching training jobs on Hugging Face cloud compute and managing the resulting model repositories. Every tool is wired into the same agentic loop, so the agent can chain them automatically in response to a single natural-language prompt.
+
+## Built-in tools
+
+The table below lists every tool that is registered on startup. Tools marked **local only** are active when you run ML Intern in local mode (the default for the CLI). Tools marked **sandbox only** are active in sandbox mode (used in non-CLI deployments such as the web backend).
+
+| Tool | Category | Purpose |
+|------|----------|---------|
+| `research` | Research | Spawns an independent sub-agent to mine papers, docs, and code without polluting the main context |
+| `explore_hf_docs` | Documentation | Browses the HF documentation index for any library with keyword search |
+| `fetch_hf_docs` | Documentation | Fetches the full markdown content of a specific HF documentation page |
+| `find_hf_api` | Documentation | Searches the HF Hub OpenAPI spec and returns `curl` examples |
+| `hf_papers` | Research | Discovers trending papers, searches by query, reads full-text sections, traces citation graphs, finds linked datasets and models |
+| `hf_inspect_dataset` | Datasets | Inspects any HF dataset: status, configs, schema, sample rows, and parquet files in one call |
+| `plan_tool` | Planning | Maintains a todo list with `pending` / `in_progress` / `completed` states so you can track multi-step tasks |
+| `hf_jobs` | Compute | Runs Python scripts or Docker containers on HF cloud compute; monitors logs and job status |
+| `hf_repo_files` | Hub repos | Lists, reads, uploads, and deletes files in any HF model, dataset, or Space repository |
+| `hf_repo_git` | Hub repos | Manages branches, tags, pull requests, and repository settings on the HF Hub |
+| `github_find_examples` | GitHub | Finds working example scripts in GitHub repositories using fuzzy keyword matching |
+| `github_list_repos` | GitHub | Lists and sorts repositories for any GitHub user or organization |
+| `github_read_file` | GitHub | Reads file content from any GitHub repository with optional line-range selection |
+| `sandbox_create` | Execution | Creates a persistent remote Linux environment (sandbox mode only) |
+| `bash` | Execution | Runs shell commands — locally on your machine (local mode) or inside the remote sandbox |
+| `read` | Execution | Reads a file with line numbers — local filesystem or sandbox filesystem |
+| `write` | Execution | Writes a file atomically — local filesystem or sandbox filesystem |
+| `edit` | Execution | Performs exact string replacement in a file with fuzzy fallback |
+
+## Local mode vs. sandbox mode
+
+ML Intern supports two execution modes that determine how `bash`, `read`, `write`, and `edit` work:
+
+<CardGroup cols={2}>
+  <Card title="Local mode (CLI default)" icon="laptop">
+    Commands run directly on your machine via `subprocess`. This is the default when you run `ml-intern` from the command line. The `bash`, `read`, `write`, and `edit` tools execute locally against your filesystem.
+
+    **When to use:** You want ML Intern to read and modify files in your working directory, run experiments locally, or iterate on scripts before submitting a cloud job.
+  </Card>
+  <Card title="Sandbox mode" icon="cloud">
+    Commands run inside a remote Linux Space on Hugging Face. The sandbox is created on demand via `sandbox_create` and persists across all tool calls in a session. Used in non-CLI deployments (e.g. the web backend).
+
+    **When to use:** Keeping your local machine clean, or running GPU-specific code tests before submitting a full `hf_jobs` job.
+  </Card>
+</CardGroup>
+
+<Note>
+  In local mode the `sandbox_create` tool is not available. In sandbox mode there is no local `bash` tool — all shell execution goes through the remote sandbox.
+</Note>
+
+## MCP tools
+
+Beyond the built-in set, ML Intern can load additional tools from any [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server you configure. MCP tools are registered at startup alongside the built-in tools and are called the same way.
+
+The default config ships with the official HF MCP server pre-configured:
+
+```json
+{
+  "mcpServers": {
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    }
+  }
+}
+```
+
+You can add as many MCP servers as you like. See the [MCP servers page](/tools/mcp-servers) for configuration details and the list of blocked tool names.
+
+## Tool pages
+
+<CardGroup cols={2}>
+  <Card title="Research sub-agent" icon="magnifying-glass" href="/tools/research">
+    Deep literature crawls — papers, citation graphs, docs, and code — in an isolated context
+  </Card>
+  <Card title="HF compute jobs" icon="microchip" href="/tools/hf-jobs">
+    Dispatch Python scripts or Docker containers to HF cloud compute with full hardware selection
+  </Card>
+  <Card title="HF repositories" icon="database" href="/tools/hf-repos">
+    Upload files, manage branches and tags, open pull requests, and create repositories on the Hub
+  </Card>
+  <Card title="Sandbox and local execution" icon="terminal" href="/tools/sandbox">
+    Interactive shell access — either in a remote HF sandbox or directly on your local machine
+  </Card>
+  <Card title="MCP servers" icon="plug" href="/tools/mcp-servers">
+    Extend the tool set with any MCP-compatible server for custom or third-party integrations
+  </Card>
+</CardGroup>

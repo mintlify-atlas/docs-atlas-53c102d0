@@ -1,0 +1,174 @@
+---
+title: "Sandbox execution and local shell tools for ML Intern"
+description: "Run shell commands and manage files in a persistent remote HF Space sandbox or locally on your machine, with GPU hardware selection support."
+---
+
+ML Intern needs somewhere to develop, test, and iterate on code before shipping it. Depending on how you launch the agent, execution happens in one of two places: a remote sandbox Space on Hugging Face (the default), or directly on your local machine (local mode). Both modes expose the same four core tools — `bash`, `read`, `write`, and `edit` — but the underlying environment and security model differ.
+
+## Choosing a mode
+
+| | Sandbox mode (default) | Local mode |
+|-|------------------------|------------|
+| **Activation** | Non-CLI deployments (web backend) | Default for the `ml-intern` CLI |
+| **Where code runs** | Remote HF Space (Linux container) | Your local machine via `subprocess` |
+| **Filesystem** | `/app` inside the Space | Your working directory |
+| **GPU support** | Yes — choose hardware at sandbox creation | Only if you have a local GPU |
+| **`sandbox_create`** | Required before first shell command | Not available |
+| **Approval needed** | `sandbox_create` requires approval | No approval for shell commands |
+
+## Sandbox mode
+
+In sandbox mode the shell tools run inside a persistent remote Linux environment backed by a Hugging Face Space. The sandbox is created on demand and survives across all tool calls in a session.
+
+### sandbox_create
+
+`sandbox_create` is the only tool in sandbox mode that requires explicit user approval, because it provisions a billable Space.
+
+<ParamField body="hardware" type="string">
+  Hardware tier for the sandbox. Defaults to `cpu-basic`. Available values include `cpu-basic`, `cpu-upgrade`, `t4-small`, `t4-medium`, `a10g-small`, `a10g-large`, and `a100-large`.
+
+  Choose GPU hardware whenever you need to test code paths that use CUDA, bf16, or model loading. A CPU sandbox cannot execute GPU-specific code, so errors that only appear on GPU will be invisible until you launch a full job.
+</ParamField>
+
+<ParamField body="private" type="boolean">
+  Create a private Space. Defaults to `false`.
+</ParamField>
+
+<Note>
+  If a sandbox is already active in the current session, calling `sandbox_create` again returns the existing sandbox's URL rather than creating a new one.
+</Note>
+
+Once the sandbox is running, the `bash`, `read`, `write`, and `edit` tools route all operations through it.
+
+### Sandbox shell tools
+
+The four operation tools work the same way as in local mode, with two differences:
+
+- Commands run at `/app` inside the Space container instead of your working directory.
+- The default timeout for `bash` is 240 seconds (max 1 200 seconds). Long-running commands should be launched in the background:
+
+```bash
+nohup uv run train.py > /app/output.log 2>&1 & echo $!
+```
+
+Then poll:
+
+```bash
+kill -0 <PID> 2>/dev/null && echo 'running' || echo 'done'
+tail -n 50 /app/output.log
+```
+
+### Typical sandbox workflow
+
+<Steps>
+  <Step title="Create a sandbox">
+    Ask ML Intern to create a sandbox, specifying GPU hardware if your code uses CUDA:
+
+    ```
+    Create a t4-small sandbox so I can test my training script before running the full job.
+    ```
+  </Step>
+  <Step title="Write your script">
+    ML Intern uses the `write` tool to place your script at `/app/train.py`.
+  </Step>
+  <Step title="Install dependencies">
+    ```bash
+    pip install transformers trl datasets accelerate
+    ```
+    or use `uv run --with transformers train.py` to avoid a separate install step.
+  </Step>
+  <Step title="Test with a small subset">
+    Run on a tiny slice of your dataset to confirm imports work and the training loop starts:
+    ```bash
+    uv run /app/train.py --max_steps 10 --dataset_size 100
+    ```
+  </Step>
+  <Step title="Fix errors interactively">
+    Use `edit` to patch issues, then rerun. Repeat until clean.
+  </Step>
+  <Step title="Submit a full job">
+    Once the sandbox test passes, submit via `hf_jobs` with appropriate hardware and a realistic timeout.
+  </Step>
+</Steps>
+
+---
+
+## Local mode
+
+In local mode the four shell tools run directly on your machine through Python's `subprocess` module. There is no sandbox to create — the tools are available immediately.
+
+### bash
+
+Runs a shell command and captures stdout and stderr.
+
+<ParamField body="command" type="string" required>
+  The shell command to execute.
+</ParamField>
+
+<ParamField body="work_dir" type="string">
+  Working directory (defaults to the current directory).
+</ParamField>
+
+<ParamField body="timeout" type="integer">
+  Timeout in seconds. Default is 120 seconds; maximum is 36 000 seconds (10 hours), which covers long local training runs.
+</ParamField>
+
+Output longer than 25 000 characters is truncated with a head + tail view, and the full output is saved to a temp file so you can read specific sections.
+
+### read
+
+Reads a file from the local filesystem and returns it with line numbers.
+
+<ParamField body="path" type="string" required>
+  Absolute path to the file.
+</ParamField>
+
+<ParamField body="offset" type="integer">
+  Line number to start from (1-based). Useful for large files.
+</ParamField>
+
+<ParamField body="limit" type="integer">
+  Number of lines to read. Defaults to 2 000.
+</ParamField>
+
+<Note>
+  You must `read` a file before calling `write` or `edit` on it. The write and edit tools will reject operations on files that have not been read in the current session.
+</Note>
+
+### write
+
+Writes content to a file atomically (via a temp file + `os.replace`). Creates parent directories as needed.
+
+<ParamField body="path" type="string" required>
+  Absolute path to the file.
+</ParamField>
+
+<ParamField body="content" type="string" required>
+  Complete file content.
+</ParamField>
+
+For Python files, `write` automatically runs a syntax check and reports any warnings.
+
+### edit
+
+Performs an exact string replacement with fuzzy matching as a fallback. Preferred over `write` for targeted changes to existing files.
+
+<ParamField body="path" type="string" required>
+  Absolute path to the file. Must have been read in the current session.
+</ParamField>
+
+<ParamField body="old_str" type="string" required>
+  The text to find. Must be unique in the file, or use `replace_all: true`.
+</ParamField>
+
+<ParamField body="new_str" type="string" required>
+  Replacement text. Set to an empty string to delete `old_str`.
+</ParamField>
+
+<ParamField body="replace_all" type="boolean">
+  Replace all occurrences instead of just the first. Defaults to `false`.
+</ParamField>
+
+<ParamField body="mode" type="string">
+  `"replace"` (default), `"append_after"` (insert after `old_str`), or `"prepend_before"` (insert before `old_str`).
+</ParamField>

@@ -1,0 +1,82 @@
+---
+title: "HF Jobs hardware flavors and specs"
+description: "All CPU and GPU hardware flavors for Hugging Face compute jobs, with vCPU, RAM, and VRAM specs to help you pick the right instance for your workload."
+---
+
+When the agent launches a training or inference job via `hf_jobs`, it targets a specific hardware flavor. Each flavor determines the number of virtual CPUs, the amount of system RAM, and — for GPU instances — the amount of GPU VRAM available to your job. Choosing the right flavor avoids out-of-memory failures and keeps costs proportional to your workload.
+
+The default timeout for all jobs is **30 minutes**. Training jobs almost always need a longer timeout — set it explicitly with the `timeout` parameter (e.g. `"4h"`, `"8h"`, `"24h"`).
+
+## CPU hardware
+
+Use CPU instances for data preprocessing, lightweight inference, or any task that does not require a GPU.
+
+| Flavor | vCPU | RAM |
+|---|---|---|
+| `cpu-basic` | 2 | 16 GB |
+| `cpu-upgrade` | 8 | 32 GB |
+
+## GPU hardware
+
+Use GPU instances for model training, fine-tuning, and GPU-accelerated inference. The VRAM column is the amount of GPU memory available to your job — this is the primary constraint for loading model weights and fitting batches.
+
+| Flavor | vCPU | RAM | GPU VRAM |
+|---|---|---|---|
+| `t4-small` | 4 | 15 GB | 16 GB |
+| `t4-medium` | 8 | 30 GB | 16 GB |
+| `a10g-small` | 4 | 15 GB | 24 GB |
+| `a10g-large` | 12 | 46 GB | 24 GB |
+| `a10g-largex2` | 24 | 92 GB | 48 GB |
+| `a10g-largex4` | 48 | 184 GB | 96 GB |
+| `a100-large` | 12 | 142 GB | 80 GB |
+| `a100x4` | 48 | 568 GB | 320 GB |
+| `a100x8` | 96 | 1,136 GB | 640 GB |
+| `l4x1` | 8 | 30 GB | 24 GB |
+| `l4x4` | 48 | 186 GB | 96 GB |
+| `l40sx1` | 8 | 62 GB | 48 GB |
+| `l40sx4` | 48 | 382 GB | 192 GB |
+| `l40sx8` | 192 | 1,534 GB | 384 GB |
+
+<Note>
+  `a10g-small` and `a10g-large` have the same 24 GB GPU. The difference is CPU and RAM only. Choose `a10g-large` if your data loading or preprocessing is CPU-bound.
+</Note>
+
+## Specialized hardware
+
+| Flavor | Description |
+|---|---|
+| `inf2x6` | AWS Inferentia2 accelerator instance for cost-efficient inference at scale. |
+
+## Choosing hardware for your workload
+
+The right flavor depends on your model size and the task you are running.
+
+<CardGroup cols={2}>
+  <Card title="Small models (1–3B params)" icon="microchip">
+    Start with `t4-small` (16 GB VRAM). If you need more CPU or system RAM for data loading, move to `t4-medium`.
+  </Card>
+  <Card title="Medium models (7–13B params)" icon="server">
+    Use `a10g-large` (24 GB VRAM) for 7B models with LoRA. For 13B full fine-tuning, consider `a100-large` (80 GB VRAM).
+  </Card>
+  <Card title="Large models (30B+)" icon="database">
+    Use `a100-large` (80 GB VRAM) for 30B models. For 70B+, use multi-GPU flavors like `a100x4` or `l40sx4`.
+  </Card>
+  <Card title="Inference at scale" icon="bolt">
+    Use `inf2x6` for cost-efficient inference workloads. For standard GPU inference, `l4x1` or `l40sx1` offer good throughput per dollar.
+  </Card>
+</CardGroup>
+
+## Timeout guidance
+
+The default timeout of `30m` is appropriate only for quick tasks like data inspection or short inference runs. For training jobs, set a timeout that exceeds your estimated runtime:
+
+| Workload | Recommended timeout |
+|---|---|
+| Data preprocessing, inspection | `30m`–`1h` |
+| 1–3B model fine-tuning | `3h`–`4h` |
+| 7–13B model fine-tuning | `6h`–`8h` |
+| 30B+ model fine-tuning | `12h`–`24h` |
+
+<Warning>
+  If a training job hits its timeout mid-run, it is cancelled and all local job storage is lost. Always set `push_to_hub=True` in your training config and provide a `hub_model_id` so checkpoints are saved to your Hugging Face repository before the job ends.
+</Warning>

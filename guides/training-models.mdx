@@ -1,0 +1,164 @@
+---
+title: "Fine-tune and train models with ML Intern"
+description: "Learn how ML Intern researches training recipes, writes scripts, and submits jobs to Hugging Face compute — with a review step before any job runs."
+---
+
+ML Intern turns a plain-language description of your training goal into a complete, running job on Hugging Face cloud compute. It researches current training recipes from the literature, writes a training script grounded in working reference implementations, proposes a hardware configuration, and waits for your approval before spending any compute budget. This guide walks through that end-to-end workflow and explains what to look for at each step.
+
+## How the training workflow works
+
+<Steps>
+  <Step title="Start a conversation describing your task">
+    Open ML Intern and describe what you want to train. You don't need to specify a dataset or model upfront — ML Intern will surface candidates.
+
+    <CodeGroup>
+    ```bash Example prompts that work well
+    ml-intern "fine-tune distilbert on my sentiment dataset"
+    ml-intern "train a ViT on ImageNet-1k"
+    ml-intern "SFT llama-3-8b on my customer support conversations"
+    ```
+    </CodeGroup>
+
+    <Tip>
+      Include the model size, task type, and any dataset you already have in mind. The more specific your prompt, the faster ML Intern finds the right recipe.
+    </Tip>
+  </Step>
+
+  <Step title="ML Intern researches training recipes">
+    Before writing a single line of code, ML Intern spawns a **research sub-agent** to find the best published training recipe for your task. The sub-agent runs in its own independent context so its work doesn't crowd out your conversation history.
+
+    The sub-agent:
+    - Searches HF Papers and Semantic Scholar for landmark papers on your task
+    - Crawls the citation graph to find recent downstream papers with stronger results
+    - Reads methodology sections (not just abstracts) to extract exact hyperparameters
+    - Validates that datasets from those papers exist on HF Hub
+    - Finds a working reference implementation in GitHub (TRL, Transformers, etc.)
+
+    You'll see live progress in the terminal as the sub-agent calls tools.
+  </Step>
+
+  <Step title="ML Intern writes a training script">
+    Using the reference implementation it found (not its internal knowledge, which is out of date), ML Intern writes a training script. The script always includes:
+
+    - `push_to_hub=True` and a `hub_model_id` — job storage is ephemeral, so the model must be pushed or it is permanently lost when the job ends
+    - Trackio monitoring so you can watch loss curves live
+    - `disable_tqdm=True` and `logging_strategy="steps"` so logs are readable in the job output
+
+    For non-trivial scripts, ML Intern first tests the code in a sandbox environment before proposing a full job submission.
+  </Step>
+
+  <Step title="ML Intern proposes a job submission">
+    ML Intern calls the `hf_jobs` tool with the `run` operation and displays a pre-flight check before executing:
+
+    ```
+    Reference implementation: huggingface/trl examples/scripts/sft.py
+    Dataset format verified: messages column confirmed via hf_inspect_dataset
+    push_to_hub=True and hub_model_id set: your-username/distilbert-sentiment
+    timeout: 4h (1-3B model on a10g-large)
+    Trackio monitoring included
+    ```
+
+    If any item is missing, ML Intern stops and completes it before proceeding.
+  </Step>
+
+  <Step title="You review and approve (or use yolo mode)">
+    ML Intern pauses and asks for your approval before submitting. Review the pre-flight check above and look for:
+
+    - **Correct hardware**: does the GPU size match the model? (See hardware guide below)
+    - **Adequate timeout**: a 30-minute timeout kills a training job mid-run — minimum 2h for any fine-tuning
+    - **push_to_hub is set**: confirm the hub_model_id points to where you want the model
+    - **Dataset columns match**: the pre-flight check should confirm this, but you can ask ML Intern to show sample rows if you're unsure
+
+    To skip the approval prompt for all jobs, run in headless mode:
+
+    ```bash
+    ml-intern "fine-tune distilbert on my sentiment dataset"
+    ```
+
+    Headless mode auto-approves every action, including job submissions.
+  </Step>
+
+  <Step title="Job runs on HF compute">
+    After approval, ML Intern submits the job and streams logs directly to your terminal. You'll see the job URL immediately after submission — you can also monitor it on the Hugging Face Jobs dashboard.
+
+    If the job fails with an out-of-memory error, ML Intern will:
+    1. Reduce `per_device_train_batch_size` and increase `gradient_accumulation_steps` proportionally (keeping effective batch size identical)
+    2. Enable `gradient_checkpointing=True`
+    3. Upgrade to a larger GPU if needed
+
+    ML Intern will not silently switch from full fine-tuning to LoRA or reduce `max_length` without your explicit approval — those changes affect what you get.
+  </Step>
+
+  <Step title="Results uploaded to HF Hub">
+    When training completes, the model is pushed to the Hub at the `hub_model_id` you specified. ML Intern provides a direct URL and includes the Trackio dashboard link for reviewing training metrics.
+  </Step>
+</Steps>
+
+## Hardware selection
+
+<CardGroup cols={2}>
+  <Card title="CPU flavors" icon="microchip">
+    **cpu-basic** — 2 vCPU / 16 GB RAM
+
+    **cpu-upgrade** — 8 vCPU / 32 GB RAM
+
+    Use for data processing, tokenization, and inference on small models only.
+  </Card>
+  <Card title="GPU flavors" icon="bolt">
+    **t4-small / t4-medium** — 16 GB VRAM, ~$0.60/hr. Good for 1–3B models.
+
+    **a10g-large** — 24 GB VRAM, ~$2/hr. 7–13B models.
+
+    **a100-large** — 80 GB VRAM, ~$4/hr. 30B+ models.
+
+    **a100x4 / a100x8** — Multi-GPU for 70B+ models.
+  </Card>
+</CardGroup>
+
+<Note>
+  `a10g-small` and `a10g-large` have **identical GPU memory** (24 GB). The difference is CPU cores and RAM only. For GPU-bound training, `a10g-large` gives you more headroom for data loading.
+</Note>
+
+The hardware sizing guide in `hf_jobs`:
+
+| Model size | Recommended hardware |
+|---|---|
+| 1–3B params | `a10g-small` or `t4-small` |
+| 7–13B params | `a10g-large` |
+| 30B+ params | `a100-large` |
+| 70B+ params | `a100x4` or `a100x8` |
+
+## Tips for writing effective training prompts
+
+<Accordion title="Include the model and dataset names if you have them">
+  "Fine-tune `distilbert-base-uncased` on `stanfordnlp/sst2`" is more actionable than "fine-tune a sentiment model." ML Intern can still find a dataset if you don't have one, but naming it saves a research step.
+</Accordion>
+
+<Accordion title="Mention the training method if you have a preference">
+  "LoRA fine-tuning", "full SFT", "DPO on preference pairs" — these steer the research sub-agent toward the right papers and reference implementations. Without a preference, ML Intern picks the method best supported by current literature.
+</Accordion>
+
+<Accordion title="State any constraints upfront">
+  "Keep it under $5 in compute", "I need it to run in under 2 hours", or "must stay below 7B parameters" help ML Intern make the right hardware and method tradeoffs from the start.
+</Accordion>
+
+<Accordion title="For batch jobs, say so explicitly">
+  "Run a sweep over learning rates 1e-4, 3e-4, 1e-3" tells ML Intern to use its batch job protocol: submit one job first, confirm it starts successfully, then submit the rest.
+</Accordion>
+
+## What to look for before approving a job
+
+The pre-flight check ML Intern displays before calling `hf_jobs` is your main safety gate. Check each item:
+
+<Warning>
+  **Never approve a job without a timeout greater than 2h.** The default is 30 minutes, which will kill any real training run before it completes. All progress is lost when the job ends.
+</Warning>
+
+- **Reference implementation** — the script must be based on a real example from GitHub, not generated from scratch. If this field says "internal knowledge," ask ML Intern to find an example first.
+- **Dataset format verified** — training will fail with a `KeyError` if the dataset columns don't match the trainer. SFT needs `messages`, `text`, or `prompt`/`completion`; DPO needs `prompt`, `chosen`, `rejected`.
+- **push_to_hub=True** — confirm the `hub_model_id` is correct. You cannot recover a model from a completed job if this was not set.
+- **Trackio dashboard URL** — you should get a live monitoring link so you can watch loss curves during training.
+
+## Related
+
+- [hf_jobs tool reference](/tools/hf-jobs) — full parameter reference for the `hf_jobs` tool

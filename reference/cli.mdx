@@ -1,0 +1,103 @@
+---
+title: "ML Intern CLI reference"
+description: "Complete reference for the ml-intern command-line interface, including all flags, environment variables, and interactive vs headless mode behavior."
+---
+
+The `ml-intern` command gives you two ways to work with the agent: an interactive chat session where you guide each step, and a headless mode where you pass a single prompt and let the agent run to completion automatically. Both modes share the same underlying agent loop, tools, and configuration.
+
+## Modes
+
+### Interactive mode
+
+Running `ml-intern` with no arguments starts a chat session. The agent initializes, loads its tools, and waits for your input. Each turn goes through an approval flow for sensitive operations like launching jobs or modifying repositories — you decide whether to approve each tool call, skip it, or enable yolo mode to auto-approve all future calls.
+
+```bash
+ml-intern
+```
+
+Press **Ctrl+C** once to cancel an in-flight turn. Press **Ctrl+C** again within one second to quit.
+
+### Headless mode
+
+Passing a prompt as a positional argument runs the agent non-interactively and exits when the turn completes. In headless mode, `yolo_mode` is set to `True` automatically — all tool calls are approved without prompting. This is designed for scripting, CI pipelines, and log capture.
+
+```bash
+ml-intern "fine-tune llama on my dataset"
+```
+
+Output is plain, append-only text. There is no shimmer animation or typewriter effect in headless mode.
+
+## Options
+
+<ParamField path="prompt" type="string">
+  A natural-language prompt to run headlessly. When provided, the agent executes one turn and exits. When omitted, the CLI starts an interactive session.
+
+  ```bash
+  ml-intern "find bird datasets with at least 10k images"
+  ```
+</ParamField>
+
+<ParamField path="--model" type="string" default="from config">
+  The model ID to use for this session. Overrides the value in `configs/main_agent_config.json`. You can use any LiteLLM-compatible model ID.
+
+  ```bash
+  ml-intern --model anthropic/claude-opus-4-6 "your prompt"
+  ml-intern -m anthropic/claude-opus-4-6 "your prompt"
+  ```
+</ParamField>
+
+<ParamField path="--max-iterations" type="integer" default="300">
+  Maximum number of LLM requests the agent can make per turn. Defaults to `300` (from `configs/main_agent_config.json`). Use `-1` for unlimited (internally mapped to 10,000). Raise this for complex tasks that require many tool calls.
+
+  ```bash
+  ml-intern --max-iterations 100 "train a model on this dataset"
+  ml-intern --max-iterations -1 "your long-running task"
+  ```
+</ParamField>
+
+<ParamField path="--no-stream" type="boolean" default="false">
+  Disable token streaming. When set, the agent waits for the full LLM response before displaying it, rather than printing tokens as they arrive. Useful in environments where streaming causes display issues.
+
+  ```bash
+  ml-intern --no-stream "your prompt"
+  ```
+</ParamField>
+
+## Environment variables
+
+Set these in a `.env` file in the project root or export them in your shell before running `ml-intern`.
+
+| Variable | Required | Description |
+|---|---|---|
+| `HF_TOKEN` | Yes | Hugging Face access token. Used to authenticate all HF API calls, launch jobs, and read/write repositories. |
+| `ANTHROPIC_API_KEY` | When using Anthropic models | API key for Anthropic models (Claude). Required if `model_name` in your config points to an `anthropic/` model. |
+| `GITHUB_TOKEN` | For GitHub tools | Personal access token for GitHub code search and repository access. |
+
+### HF token prompt on first launch
+
+If `HF_TOKEN` is not set and no token is cached at `~/.cache/huggingface/token`, the CLI will prompt you to paste one before starting:
+
+```
+A Hugging Face token is required.
+Get one at: https://huggingface.co/settings/tokens
+
+Paste your HF token:
+```
+
+The token is validated against the HF API and saved via `huggingface-cli login` so future sessions start without prompting. In headless mode, a missing token causes the CLI to exit with an error rather than prompt interactively.
+
+## Example invocations
+
+```bash
+# Start an interactive session
+ml-intern
+
+# One-shot headless prompt
+ml-intern "search for emotion classification datasets"
+
+# Use a specific model with a higher iteration limit
+ml-intern --model anthropic/claude-opus-4-6 --max-iterations 200 "fine-tune distilbert on imdb"
+
+# Disable streaming for script-friendly output
+ml-intern --no-stream "inspect my latest HF job logs"
+```

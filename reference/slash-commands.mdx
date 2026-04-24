@@ -1,0 +1,123 @@
+---
+title: "Slash commands reference"
+description: "All slash commands available in the ml-intern interactive CLI, including syntax, examples, and notes on yolo mode, model switching, and reasoning effort."
+---
+
+Slash commands let you control the agent session without sending a prompt to the LLM. Type a command at the `>` prompt and press Enter. Commands that change agent state (like `/model` or `/effort`) take effect immediately for the current and all subsequent turns.
+
+## Quitting
+
+Type `exit`, `quit`, `/quit`, or `/exit` at the prompt to end the session cleanly. The agent shuts down, closes its MCP connections, and prints "Bye."
+
+You can also press **Ctrl+C** twice within one second to quit. The first press cancels the in-flight turn (if one is running) and shows a hint; the second press within the 1-second window exits the CLI.
+
+## Command reference
+
+### /help
+
+Display the list of available commands.
+
+```
+/help
+```
+
+### /undo
+
+Undo the last operation. The agent replays the session state from before the previous turn, removing the most recent user message and the agent's response from the context.
+
+```
+/undo
+```
+
+### /compact
+
+Manually trigger context compaction. The agent summarizes older context items to reduce token usage, keeping the most recent messages intact. Use this when you are approaching the context limit and want to preserve the current conversation before it auto-compacts.
+
+```
+/compact
+```
+
+<Note>
+  Context also compacts automatically when token usage approaches the model's limit. The `/compact` command lets you trigger this on demand.
+</Note>
+
+### /model
+
+List available models or switch the active model.
+
+**List models:**
+
+```
+/model
+```
+
+**Switch model:**
+
+```
+/model anthropic/claude-opus-4-6
+/model claude-sonnet-4-5-20250929
+```
+
+The `huggingface/` prefix is stripped automatically before the switch, so `/model huggingface/claude-sonnet` and `/model claude-sonnet` are equivalent. After switching, the agent probes the new model to confirm the model ID and any reasoning effort settings are valid.
+
+### /yolo
+
+Toggle yolo mode on or off. When yolo mode is **on**, the agent auto-approves every tool call — including job launches, file uploads, and repository changes — without asking for confirmation. When **off**, the agent pauses before sensitive operations and prompts you for each approval.
+
+```
+/yolo
+```
+
+You can also activate yolo mode mid-approval by typing `yolo` at an approval prompt rather than `y` or `n`. This approves the current item and all remaining items in the batch, and enables yolo mode for all future turns in the session.
+
+<Warning>
+  Yolo mode skips all approval checks. Use it only when you trust the agent's plan and do not need to review tool calls before they execute.
+</Warning>
+
+### /effort
+
+Show or set the reasoning effort level. Reasoning effort controls how much extended thinking the model applies before responding. Not all models support all levels; the agent automatically falls back to the highest level the model accepts.
+
+**Show current effort:**
+
+```
+/effort
+```
+
+**Set effort level:**
+
+```
+/effort high
+/effort off
+```
+
+Valid levels, from least to most computation:
+
+| Level | Description |
+|---|---|
+| `off` | No extended thinking |
+| `minimal` | Minimal reasoning |
+| `low` | Low reasoning |
+| `medium` | Medium reasoning |
+| `high` | High reasoning |
+| `xhigh` | Extra-high reasoning (Anthropic models only) |
+| `max` | Maximum reasoning (Anthropic models only) |
+
+After changing effort, the per-model probe cache is cleared. Send any message or run `/model <current-model>` to re-probe and confirm the new level is accepted.
+
+### /status
+
+Show the current model, reasoning effort setting, turn count, and number of items in the context window.
+
+```
+/status
+```
+
+Example output:
+
+```
+Model: anthropic/claude-opus-4-6
+Reasoning effort: high
+Turns: 4
+Context items: 23
+```

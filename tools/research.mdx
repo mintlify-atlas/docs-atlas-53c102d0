@@ -1,0 +1,86 @@
+---
+title: "Research sub-agent: deep literature and code mining"
+description: "Spawns an independent LLM sub-agent to mine papers, docs, and code repositories without consuming the main conversation's context window."
+---
+
+The `research` tool gives ML Intern a way to do deep, exploratory information gathering without paying the context cost in the main conversation. When you trigger research, a separate sub-agent spins up with its own independent context window, a read-only subset of tools, and a focused task. When it finishes, it returns a structured summary — papers, datasets, code patterns, and recommendations — that the main agent uses to implement the actual solution.
+
+## How the research sub-agent works
+
+<Steps>
+  <Step title="Receive the task">
+    The main agent calls `research` with a `task` string describing what to find, plus an optional `context` string carrying relevant details from the current conversation (goals, constraints, what has already been tried).
+  </Step>
+  <Step title="Spawn an independent context">
+    A fresh message history is created — just the research system prompt and the task. Nothing from the main conversation leaks in. The sub-agent runs on a cost-efficient model (Claude Sonnet by default when the main model is Anthropic).
+  </Step>
+  <Step title="Mine the literature first">
+    The sub-agent's default approach is a deep literature crawl. It starts with `hf_papers` to find anchor papers, then crawls the citation graph downstream (papers that cite the anchor — these typically contain better methods), reads methodology sections, and attributes results to specific training recipes with exact hyperparameters.
+  </Step>
+  <Step title="Validate datasets and find code">
+    After identifying promising approaches, the sub-agent checks whether the datasets exist on the HF Hub (`hf_inspect_dataset`), verifies column formats match the intended training method (SFT / DPO / GRPO), then finds working implementation code via `github_find_examples` and `github_read_file`.
+  </Step>
+  <Step title="Return a structured summary">
+    The sub-agent produces a ranked list of training recipes (paper → result → dataset → method → hyperparameters), followed by code patterns from real examples and a recommendation on what to implement first. The summary targets 500–1 500 words and goes directly into the main agent's context.
+  </Step>
+</Steps>
+
+## Tools available to the research sub-agent
+
+The sub-agent has access to a read-only subset of the full tool set. It cannot create files, run jobs, or modify any repository.
+
+| Tool | Purpose |
+|------|---------|
+| `hf_papers` | Search papers, read full-text sections, trace citation graphs, find linked datasets |
+| `hf_inspect_dataset` | Verify dataset schema and sample rows before recommending it |
+| `hf_repo_files` | List and read files from any HF model, dataset, or Space |
+| `explore_hf_docs` | Browse the HF documentation index for any library |
+| `fetch_hf_docs` | Fetch the full markdown content of a doc page |
+| `find_hf_api` | Search the HF Hub OpenAPI spec |
+| `github_find_examples` | Find working example scripts in GitHub repositories |
+| `github_list_repos` | List repositories for a GitHub user or organization |
+| `github_read_file` | Read a file from a GitHub repository |
+| `bash` | Available only when the session is in local mode |
+| `read` | Read a local or sandbox file |
+
+## Context budget
+
+The sub-agent has its own token budget, independent of the main session.
+
+| Threshold | Tokens | Behavior |
+|-----------|--------|----------|
+| Warn | 170 000 | Sub-agent is nudged to wrap up within 1–2 more iterations |
+| Max | 190 000 | Sub-agent is forced to produce an immediate final summary with no further tool calls |
+| Iteration limit | 60 iterations | If reached, the agent summarizes all findings collected so far |
+
+<Note>
+  The context budget exists to prevent runaway research loops. If a research task is too broad, the sub-agent will still return partial findings — try breaking large tasks into focused sub-tasks.
+</Note>
+
+## Tool parameters
+
+<ParamField body="task" type="string" required>
+  Detailed description of what to research. Be specific: include library names, trainer types, dataset names, repo names, or doc pages to explore.
+
+  **Example:** `"Research current TRL SFTTrainer usage: find working example scripts, read the SFT documentation, and check SFTConfig parameters. Also validate that dataset HuggingFaceH4/ultrachat_200k has the right format for SFT."`
+</ParamField>
+
+<ParamField body="context" type="string">
+  Optional context from the current conversation that the research agent needs — for example, what the user wants to build, constraints, or what has already been tried.
+</ParamField>
+
+## Triggering research in a prompt
+
+You do not need to call the `research` tool directly. Simply describe your goal naturally and ML Intern will decide when a research pass is needed:
+
+```
+Fine-tune a LLaMA 3 8B model on a custom instruction dataset using DPO.
+Research the best current recipes and validate that the dataset I have
+is in the right format.
+```
+
+ML Intern will call `research` with a focused task before writing any code, ensuring the training script is based on up-to-date papers and working examples rather than stale internal knowledge.
+
+<Tip>
+  For best results, include the specific library (`trl`, `transformers`), training method (SFT, DPO, GRPO), and any dataset you already have in mind. The more specific the task, the more actionable the research output.
+</Tip>

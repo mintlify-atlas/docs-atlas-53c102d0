@@ -1,0 +1,172 @@
+---
+title: "How the agentic loop works"
+description: "ML Intern iterates between LLM calls and tool execution, handling approval gates and doom-loop detection, for up to 300 iterations per user turn."
+---
+
+Every time you send a message, ML Intern enters an iterative loop that alternates between LLM inference and tool execution. The loop continues until the model produces a response with no tool calls, you interrupt it, or the maximum iteration count is reached. Understanding this cycle helps you predict agent behavior and tune it for your workload.
+
+## Loop flow
+
+```text
+User Message
+     ↓
+[Add to ContextManager]
+     ↓
+     ╔═══════════════════════════════════════════╗
+     ║      Iteration Loop (max 300)             ║
+     ║                                           ║
+     ║  Get messages + tool specs                ║
+     ║         ↓                                 ║
+     ║  litellm.acompletion()                    ║
+     ║         ↓                                 ║
+     ║  Has tool_calls? ──No──> Done             ║
+     ║         │                                 ║
+     ║        Yes                                ║
+     ║         ↓                                 ║
+     ║  Add assistant msg (with tool_calls)      ║
+     ║         ↓                                 ║
+     ║  Doom loop check                          ║
+     ║         ↓                                 ║
+     ║  For each tool_call:                      ║
+     ║    • Needs approval? ──Yes──> Wait for    ║
+     ║    │                         user confirm ║
+     ║    No                                     ║
+     ║    ↓                                      ║
+     ║    • ToolRouter.execute_tool()            ║
+     ║    • Add result to ContextManager         ║
+     ║         ↓                                 ║
+     ║  Continue loop ─────────────────┐         ║
+     ║         ↑                       │         ║
+     ║         └───────────────────────┘         ║
+     ╚═══════════════════════════════════════════╝
+```
+
+## Step-by-step breakdown
+
+<Steps>
+  <Step title="Add the user message">
+    Your message is appended to the `ContextManager` as a `litellm.Message` with `role="user"`. A `processing` event is emitted so the UI can show a loading state.
+  </Step>
+  <Step title="Check for cancellation and compact if needed">
+    At the top of every iteration the loop checks `session.is_cancelled`. If you have pressed Ctrl+C since the last check, the loop exits immediately. If not, it checks whether the running token count exceeds 90% of the model's context window and runs compaction if so — keeping the next LLM call within limits.
+  </Step>
+  <Step title="Run the doom-loop detector">
+    Before calling the LLM, the loop inspects the last 30 messages for repeated tool-call patterns. If a pattern is detected, a corrective system prompt is injected (see [Doom-loop detection](#doom-loop-detection) below).
+  </Step>
+  <Step title="Call the LLM">
+    `litellm.acompletion()` is called with the full message history and the complete list of tool specs in OpenAI function-calling format. In streaming mode, `assistant_chunk` events arrive token-by-token; in non-streaming mode a single `assistant_message` event arrives at the end.
+  </Step>
+  <Step title="Parse tool calls">
+    The response is checked for `tool_calls`. If there are none, the assistant message is added to context and the loop exits — the turn is complete.
+
+    If there are tool calls, each call's JSON arguments are parsed. Malformed arguments are caught immediately: the bad call is added to context with an error result so the model can retry with corrected arguments.
+  </Step>
+  <Step title="Approval check">
+    Each valid tool call is classified as either *auto-execute* or *approval-required* (see [Approval flow](#approval-flow) below). Auto-execute tools proceed immediately; approval-required tools pause the loop and emit an `approval_required` event.
+  </Step>
+  <Step title="Execute tools in parallel">
+    All auto-execute tools in a batch run concurrently via `asyncio.gather`. Results are written back to the `ContextManager` as `role="tool"` messages and emitted as `tool_output` events.
+  </Step>
+  <Step title="Repeat">
+    The iteration counter increments and the loop restarts from step 2 until the model stops calling tools, the iteration limit is hit, or the session is cancelled.
+  </Step>
+</Steps>
+
+## Max iterations
+
+The loop runs for at most `max_iterations` iterations per turn. The default is **300**, which is enough for most complex multi-step tasks. You can override it at startup:
+
+```bash
+ml-intern --max-iterations 100 "your prompt"
+```
+
+Setting it to `-1` removes the limit entirely. When the limit is reached the loop exits and emits a `turn_complete` event — the model will see the limit as an implicit stop signal on the next user message.
+
+<Warning>
+  Removing the iteration limit (`--max-iterations -1`) means a stuck agent can run indefinitely. The doom-loop detector provides a safety net, but setting a reasonable limit is still recommended for automated or headless runs.
+</Warning>
+
+## Doom-loop detection
+
+The doom-loop detector in `agent/core/doom_loop.py` protects you from situations where the agent repeats the same tool call over and over without making progress. It runs once per iteration, before the LLM call.
+
+It checks the last 30 assistant messages for two patterns:
+
+<CardGroup cols={2}>
+  <Card title="Identical consecutive calls" icon="repeat">
+    If the same tool is called with the same arguments **3 or more times in a row**, the detector fires. Example: `read_file(path="foo.py")` called three times back-to-back.
+  </Card>
+  <Card title="Repeating sequences" icon="arrows-rotate">
+    If a sequence of 2–5 tool calls repeats at least twice at the tail of the message list, the detector fires. Example: `[search → read → search → read]`.
+  </Card>
+</CardGroup>
+
+When either pattern is detected, a `[SYSTEM: DOOM LOOP DETECTED]` message is injected into the context telling the model to stop and try a different approach. A `tool_log` event is also emitted so the UI can surface the warning.
+
+## Approval flow
+
+Certain tool calls require your explicit confirmation before they execute. The approval gate is implemented in `_needs_approval()` in `agent_loop.py`.
+
+<Accordion title="Which tools require approval?">
+
+| Tool | Operation | Approval required? |
+|---|---|---|
+| `sandbox_create` | any | Always |
+| `hf_jobs` | `run`, `uv`, `scheduled run`, `scheduled uv` (GPU) | Always |
+| `hf_jobs` | `run`, `uv` (CPU only) | Yes, unless `confirm_cpu_jobs = false` in config |
+| `hf_private_repos` | `upload_file` | Yes, unless `auto_file_upload = true` in config |
+| `hf_private_repos` | `create_repo` | Always |
+| `hf_repo_files` | `upload`, `delete` | Always |
+| `hf_repo_git` | `delete_branch`, `delete_tag`, `merge_pr`, `create_repo`, `update_repo` | Always |
+
+</Accordion>
+
+When an approval-required tool is encountered, the loop:
+
+1. Emits an `approval_required` event with the full list of tools needing confirmation.
+2. Stores the pending tool calls in `session.pending_approval`.
+3. Returns early — the loop is suspended until you respond.
+
+You can **approve** (optionally editing the script for `hf_jobs`), **reject** with optional feedback, or send a new message to abandon the pending tools entirely. Approved tools execute concurrently; rejected tools get a rejection message injected into context so the model knows what happened.
+
+### Yolo mode
+
+If you set `yolo_mode: true` in `configs/main_agent_config.json`, or toggle it with the `/yolo` slash command (or type `yolo` at any approval prompt), `_needs_approval()` always returns `False` and every tool executes without confirmation. Headless mode also enables yolo automatically. This is useful for fully automated runs where you trust the agent's plan.
+
+<Warning>
+  Yolo mode bypasses all approval gates, including GPU job submission and destructive repository operations. Use it only in automated environments where you have reviewed what the agent is likely to do.
+</Warning>
+
+## Streaming vs. non-streaming
+
+<CardGroup cols={2}>
+  <Card title="Streaming (default)" icon="bolt">
+    The LLM response arrives token-by-token. Each token emits an `assistant_chunk` event, followed by `assistant_stream_end` when the stream is complete. Tool-call arguments are accumulated from deltas as they arrive.
+  </Card>
+  <Card title="Non-streaming" icon="clock">
+    The full response is buffered server-side and returned as a single object. A single `assistant_message` event is emitted. Useful when the upstream provider doesn't support streaming or when you want simpler event handling.
+  </Card>
+</CardGroup>
+
+To use non-streaming mode:
+
+```bash
+ml-intern --no-stream "your prompt"
+```
+
+## Interrupts
+
+You can interrupt a running turn in two ways:
+
+- **Ctrl+C** in the CLI — the CLI sends an `INTERRUPT` operation to `submission_queue`, which calls `session.cancel()`.
+- **`session.cancel()`** programmatically — sets the `_cancelled` asyncio event that the loop checks at the start of each iteration and before tool execution.
+
+On interrupt, any in-flight `asyncio.gather` for parallel tool execution is cancelled, active sandbox processes are killed, and running HF jobs are cancelled via the HF API. An `interrupted` event is emitted when cleanup is complete.
+
+<Tip>
+  If you interrupt during an approval wait, the pending tool calls are abandoned and their tool-result messages are injected into context automatically, keeping the message history valid for the next turn.
+</Tip>
+
+## Transient error retry
+
+The loop retries LLM calls up to **3 times** for transient network errors (timeouts, rate limits, 5xx responses) with backoff delays of 5 s, 15 s, and 30 s. A `tool_log` event is emitted for each retry so you can see what is happening. Non-transient errors (authentication failures, model not found) surface immediately as `error` events.

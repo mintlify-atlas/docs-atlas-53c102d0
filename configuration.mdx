@@ -1,0 +1,210 @@
+---
+title: "Configure ML Intern: models, sessions, and MCP servers"
+description: "Customise ML Intern's model, session saving, approval behaviour, and MCP servers using main_agent_config.json and environment variable substitution."
+---
+
+ML Intern loads its configuration from `configs/main_agent_config.json` in the project root at startup. You can also override the model and iteration limit at runtime using CLI flags. This page documents every configuration field, environment variable substitution, and how to add MCP servers.
+
+## Configuration file
+
+The config file is located at `configs/main_agent_config.json`. The default configuration looks like this:
+
+```json configs/main_agent_config.json
+{
+  "model_name": "bedrock/us.anthropic.claude-opus-4-6-v1",
+  "save_sessions": true,
+  "session_dataset_repo": "akseljoonas/hf-agent-sessions",
+  "yolo_mode": false,
+  "confirm_cpu_jobs": true,
+  "auto_file_upload": true,
+  "mcpServers": {
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    }
+  }
+}
+```
+
+## Configuration fields
+
+<AccordionGroup>
+  <Accordion title="model_name" defaultOpen={true}>
+    **Type:** `string` — **Required**
+
+    The LiteLLM-compatible model ID to use for all LLM calls. ML Intern supports any model that LiteLLM can route, including Anthropic, AWS Bedrock, the Hugging Face router, and OpenAI.
+
+    ```json
+    { "model_name": "anthropic/claude-opus-4-6" }
+    ```
+
+    You can override this at runtime with the `--model` CLI flag, or switch mid-session with the `/model` slash command.
+  </Accordion>
+
+  <Accordion title="save_sessions">
+    **Type:** `boolean` — **Default:** `true`
+
+    When `true`, ML Intern uploads the conversation history to a Hugging Face dataset repo after every `auto_save_interval` turns. This gives you a persistent audit trail of every task the agent performed.
+
+    Set to `false` to disable session saving entirely.
+
+    ```json
+    { "save_sessions": false }
+    ```
+  </Accordion>
+
+  <Accordion title="session_dataset_repo">
+    **Type:** `string` — **Default:** `"akseljoonas/hf-agent-sessions"`
+
+    The Hugging Face dataset repo ID (`username/repo-name`) where sessions are saved when `save_sessions` is `true`. Change this to your own repo so sessions are saved to your account.
+
+    ```json
+    { "session_dataset_repo": "your-username/ml-intern-sessions" }
+    ```
+  </Accordion>
+
+  <Accordion title="yolo_mode">
+    **Type:** `boolean` — **Default:** `false`
+
+    When `true`, ML Intern auto-approves all tool calls — including cloud job submissions, repo writes, and sandbox commands — without asking for confirmation. This is automatically enabled in headless mode.
+
+    You can toggle YOLO mode during an interactive session with the `/yolo` slash command, or type `yolo` at any approval prompt to approve all remaining items and activate it for the rest of the session.
+
+    <Warning>
+      Enabling `yolo_mode` in the config means the agent will dispatch GPU jobs and modify repositories without any confirmation. Use with care.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="confirm_cpu_jobs">
+    **Type:** `boolean` — **Default:** `true`
+
+    When `true`, CPU-tier Hugging Face Jobs also require your approval before running. Set to `false` if you want CPU jobs to run automatically while GPU jobs still require confirmation.
+
+    ```json
+    { "confirm_cpu_jobs": false }
+    ```
+  </Accordion>
+
+  <Accordion title="auto_file_upload">
+    **Type:** `boolean` — **Default:** `false`
+
+    When `true`, ML Intern automatically uploads local files to the Hub when needed for a task, without a separate confirmation step. The default config sets this to `true`; the code default is `false`.
+
+    ```json
+    { "auto_file_upload": true }
+    ```
+  </Accordion>
+
+  <Accordion title="auto_save_interval">
+    **Type:** `integer` — **Default:** `3`
+
+    How often (in user turns) ML Intern auto-saves the session to the Hugging Face dataset repo when `save_sessions` is `true`. A value of `0` disables auto-save (the session is only saved at shutdown). The default of `3` saves after every third turn, balancing safety against upload frequency.
+
+    ```json
+    { "auto_save_interval": 5 }
+    ```
+  </Accordion>
+
+  <Accordion title="reasoning_effort">
+    **Type:** `string | null` — **Default:** `"max"`
+
+    Controls how much extended thinking (chain-of-thought reasoning) the model applies before responding. The default `"max"` maximizes reasoning quality at the cost of additional tokens. The agent automatically falls back to the highest level the active model actually supports.
+
+    Valid values: `null` (off), `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`.
+
+    ```json
+    { "reasoning_effort": "high" }
+    ```
+
+    You can also change this mid-session with the `/effort` slash command. Note that `"xhigh"` and `"max"` are Anthropic-only; other providers fall back to `"high"`.
+  </Accordion>
+
+  <Accordion title="mcpServers">
+    **Type:** `object` — **Default:** `{}`
+
+    A map of MCP server configurations. Each key is a server name and the value describes how to connect. ML Intern uses [FastMCP](https://gofastmcp.com) to connect to servers and exposes their tools alongside the built-in tools.
+
+    See [Adding MCP servers](#adding-mcp-servers) below for examples.
+  </Accordion>
+</AccordionGroup>
+
+## Adding MCP servers
+
+You can extend ML Intern with any MCP-compatible server by adding an entry to the `mcpServers` object. ML Intern supports both HTTP and stdio transports.
+
+### HTTP transport
+
+```json configs/main_agent_config.json
+{
+  "model_name": "bedrock/us.anthropic.claude-opus-4-6-v1",
+  "mcpServers": {
+    "your-server-name": {
+      "transport": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${YOUR_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+### Stdio transport
+
+For local MCP servers that communicate over stdin/stdout:
+
+```json configs/main_agent_config.json
+{
+  "mcpServers": {
+    "local-server": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["-m", "my_mcp_server"]
+    }
+  }
+}
+```
+
+The built-in `hf-mcp-server` entry connects to the official Hugging Face MCP server, which provides additional Hub tools including model search and dataset previews.
+
+## Environment variable substitution
+
+Any string value in `main_agent_config.json` can reference an environment variable using the `${VAR_NAME}` syntax. ML Intern automatically substitutes these at startup, loading values first from the project root `.env` file, then from the current working directory's `.env`.
+
+```json configs/main_agent_config.json
+{
+  "mcpServers": {
+    "my-server": {
+      "transport": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MY_API_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+With `MY_API_TOKEN=abc123` in your `.env` file, ML Intern resolves this to `"Bearer abc123"` before connecting.
+
+You can also use a default value with `${VAR_NAME:-default}`:
+
+```json
+{ "session_dataset_repo": "${HF_USERNAME:-my-username}/ml-intern-sessions" }
+```
+
+<Note>
+  If a required variable (no default) is not set in the environment or `.env` file, ML Intern will exit with an error at startup listing the missing variable name.
+</Note>
+
+## Runtime overrides
+
+Some configuration values can be changed without editing the file:
+
+| Method | What you can change |
+|---|---|
+| `--model <id>` CLI flag | `model_name` for a single run |
+| `--max-iterations <n>` CLI flag | Maximum LLM calls per turn |
+| `/model <id>` slash command | `model_name` for the current session |
+| `/effort <level>` slash command | Reasoning effort (`minimal` → `max`) |
+| `/yolo` slash command | Toggle `yolo_mode` for the current session |

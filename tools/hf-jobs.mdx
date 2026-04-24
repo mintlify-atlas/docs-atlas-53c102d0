@@ -1,0 +1,191 @@
+---
+title: "Dispatching and monitoring training jobs on HF compute"
+description: "Dispatch Python scripts or Docker containers to Hugging Face cloud infrastructure, monitor logs in real time, and manage scheduled recurring jobs."
+---
+
+The `hf_jobs` tool lets ML Intern submit, monitor, and cancel compute jobs on Hugging Face infrastructure directly from the chat. You can run a Python training script, a data-processing pipeline, or any arbitrary Docker container — on hardware ranging from a 2-vCPU CPU slot up to an 8× L40S GPU node.
+
+## Job modes
+
+Every `run` call uses exactly one of two mutually exclusive modes:
+
+<CardGroup cols={2}>
+  <Card title="Python mode" icon="python">
+    Provide a `script` parameter containing either inline Python code, a path to a sandbox file, or a URL. The tool wraps it with `uv run` using the `ghcr.io/astral-sh/uv:python3.12-bookworm` image and installs all listed `dependencies` before execution.
+  </Card>
+  <Card title="Docker mode" icon="docker">
+    Provide a `command` list (e.g. `["python", "train.py"]`) and optionally an `image`. Any public Docker image can be used; the default is `python:3.12`.
+  </Card>
+</CardGroup>
+
+<Warning>
+  `script` and `command` are mutually exclusive. Providing both causes the job to fail immediately.
+</Warning>
+
+## Hardware flavors
+
+### CPU
+
+| Flavor | vCPU | RAM |
+|--------|------|-----|
+| `cpu-basic` | 2 | 16 GB |
+| `cpu-upgrade` | 8 | 32 GB |
+
+### GPU
+
+| Flavor | vCPU | RAM | GPU VRAM |
+|--------|------|-----|----------|
+| `t4-small` | 4 | 15 GB | 16 GB (T4) |
+| `t4-medium` | 8 | 30 GB | 16 GB (T4) |
+| `a10g-small` | 4 | 15 GB | 24 GB (A10G) |
+| `a10g-large` | 12 | 46 GB | 24 GB (A10G) |
+| `a10g-largex2` | 24 | 92 GB | 48 GB (2× A10G) |
+| `a10g-largex4` | 48 | 184 GB | 96 GB (4× A10G) |
+| `a100-large` | 12 | 142 GB | 80 GB (A100) |
+| `a100x4` | 48 | 568 GB | 320 GB (4× A100) |
+| `a100x8` | 96 | 1 136 GB | 640 GB (8× A100) |
+| `l4x1` | 8 | 30 GB | 24 GB (L4) |
+| `l4x4` | 48 | 186 GB | 96 GB (4× L4) |
+| `l40sx1` | 8 | 62 GB | 48 GB (L40S) |
+| `l40sx4` | 48 | 382 GB | 192 GB (4× L40S) |
+| `l40sx8` | 192 | 1 534 GB | 384 GB (8× L40S) |
+
+**Sizing guide:** 1–3 B params → `t4-small` / `a10g-small`; 7–13 B → `a10g-large`; 30 B+ → `a100-large`; 70 B+ → `a100x8` or `l40sx8`.
+
+<Note>
+  `a10g-small` and `a10g-large` have the **same 24 GB GPU**. The difference is CPU cores and RAM only — choose `a10g-large` when you need more CPU for data loading or preprocessing.
+</Note>
+
+## Timeout
+
+The `timeout` parameter controls the maximum wall-clock time before the job is automatically cancelled. The default is `"30m"` — far too short for any real training run.
+
+| Workload | Recommended timeout |
+|----------|-------------------|
+| Quick data processing or inference | `"30m"` – `"1h"` |
+| 1–3 B fine-tune | `"3h"` – `"4h"` |
+| 7–13 B fine-tune | `"6h"` – `"8h"` |
+| 30 B+ fine-tune | `"12h"` – `"24h"` |
+
+<Warning>
+  Always set `timeout` explicitly for training jobs. The 30-minute default will kill a mid-run model without saving anything.
+</Warning>
+
+## Environment variables and secrets
+
+`env` variables are passed in plain text (visible in logs). `secrets` are injected as environment variables but are redacted in the UI. Your `HF_TOKEN` is always injected automatically under both `HF_TOKEN` and `HUGGINGFACE_HUB_TOKEN`.
+
+Several noise-reduction defaults are also injected automatically:
+
+```
+HF_HUB_DISABLE_PROGRESS_BARS=1
+TQDM_DISABLE=1
+TRANSFORMERS_VERBOSITY=warning
+HF_HUB_ENABLE_HF_TRANSFER=1
+UV_NO_PROGRESS=1
+```
+
+## Approval flow
+
+By default, every `hf_jobs run` call requires explicit user approval before the job is submitted. This gives you a chance to review the script, hardware selection, and timeout before incurring compute costs.
+
+To skip the approval prompt and allow ML Intern to submit jobs automatically, set `yolo_mode: true` in your config:
+
+```json
+{
+  "yolo_mode": true
+}
+```
+
+<Warning>
+  `yolo_mode` disables approval for **all** tool calls that would normally require confirmation, including file uploads and repo operations — not just compute jobs.
+</Warning>
+
+`confirm_cpu_jobs: false` lets you skip approval specifically for CPU-only jobs while still requiring confirmation for GPU jobs.
+
+## Job status operations
+
+After a job is submitted, ML Intern streams logs in real time. You can also manage jobs manually:
+
+<Accordion title="List running jobs">
+```json
+{ "operation": "ps" }
+```
+Add `"all": true` to see completed and failed jobs as well.
+</Accordion>
+
+<Accordion title="Fetch logs for a specific job">
+```json
+{ "operation": "logs", "job_id": "job-abc123" }
+```
+</Accordion>
+
+<Accordion title="Inspect job details">
+```json
+{ "operation": "inspect", "job_id": "job-abc123" }
+```
+</Accordion>
+
+<Accordion title="Cancel a running job">
+```json
+{ "operation": "cancel", "job_id": "job-abc123" }
+```
+</Accordion>
+
+## Scheduled jobs
+
+You can create recurring jobs using a cron schedule or a preset alias:
+
+| Preset | Schedule |
+|--------|----------|
+| `@hourly` | Every hour |
+| `@daily` | Once a day |
+| `@weekly` | Once a week |
+| `@monthly` | Once a month |
+
+```json
+{
+  "operation": "scheduled run",
+  "script": "import datetime; print(datetime.datetime.now())",
+  "dependencies": [],
+  "hardware_flavor": "cpu-basic",
+  "schedule": "@daily",
+  "timeout": "10m"
+}
+```
+
+Scheduled jobs can be listed (`scheduled ps`), inspected (`scheduled inspect`), suspended (`scheduled suspend`), resumed (`scheduled resume`), and deleted (`scheduled delete`).
+
+## Example: asking ML Intern to run a training job
+
+```
+Fine-tune Llama 3 8B on HuggingFaceH4/ultrachat_200k using SFT.
+Push the result to my-org/llama3-8b-sft. Use a100-large hardware.
+```
+
+ML Intern will:
+
+1. Research current TRL `SFTTrainer` usage and validate the dataset format.
+2. Write a training script based on a real working example.
+3. Present the script and hardware selection for your approval.
+4. Submit the job, stream logs, and report the final model URL.
+
+## OOM recovery
+
+When a job fails with CUDA out-of-memory:
+
+<Steps>
+  <Step title="Reduce batch size">
+    Lower `per_device_train_batch_size` and increase `gradient_accumulation_steps` by the same factor to keep the effective batch size identical.
+  </Step>
+  <Step title="Enable gradient checkpointing">
+    Add `gradient_checkpointing=True` to the trainer config — this trades compute for memory.
+  </Step>
+  <Step title="Upgrade hardware">
+    If the above is not enough, move up one tier: `a10g-large` → `a100-large` → `a100x4`.
+  </Step>
+</Steps>
+
+<Warning>
+  Do not switch training methods (e.g. full fine-tune to LoRA) or silently reduce `max_length` to work around OOM — these change what you get and require explicit user approval.
+</Warning>

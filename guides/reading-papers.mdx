@@ -1,0 +1,130 @@
+---
+title: "Research ML papers and training recipes"
+description: "Use ML Intern's research sub-agent to crawl ArXiv papers, trace citation graphs, and extract the exact datasets and hyperparameters behind published results."
+---
+
+ML Intern treats published research as its primary source of truth for training recipes. Before writing any training code, its research sub-agent mines the literature to find what actually works — not what its internal knowledge (which is outdated) suggests. This guide explains how the research workflow operates, when it runs automatically, and how to trigger deep vs. shallow research.
+
+## How the research sub-agent works
+
+When ML Intern receives a training-related request, it spawns a **research sub-agent** as one of its first actions. The sub-agent:
+
+- Runs in a completely **independent context** — its tool calls and intermediate outputs don't pollute the main conversation's context window
+- Has access to a **read-only subset of tools**: `hf_papers`, `hf_inspect_dataset`, `github_find_examples`, `github_read_file`, `explore_hf_docs`, `fetch_hf_docs`, and `hf_repo_files`
+- Runs its own agentic loop (up to 60 iterations) and returns a **concise structured summary** with ranked training recipes attributed to published results
+- Uses a cheaper, faster model than the main agent so research doesn't consume your compute budget
+
+The sub-agent's output follows a strict format: a ranked recipe table where every finding links a result to the recipe that produced it — "Dataset X + method Y + lr Z → score W on benchmark V." Vague claims like "they used SFT" are not useful and the sub-agent is instructed to avoid them.
+
+## The citation graph crawl
+
+The research sub-agent follows a specific paper-first approach rather than starting from documentation or example scripts:
+
+<Steps>
+  <Step title="Find anchor papers">
+    The sub-agent searches for landmark papers for the task or domain using `hf_papers(operation="search")`. It looks for high-citation, recent papers — these are the starting points.
+
+    ```python
+    # Example: finding anchor papers for a task
+    hf_papers({"operation": "search", "query": "efficient fine-tuning LLM", "sort_by": "citationCount"})
+    ```
+  </Step>
+
+  <Step title="Crawl the citation graph downstream">
+    Using `hf_papers(operation="citation_graph")` on the anchor paper(s), the sub-agent looks **downstream** — papers that cite the anchor. These are the ones that built on it, improved it, or applied it to new domains. Papers with many citations and recent publication dates are prioritized.
+
+    ```python
+    # Crawl downstream citations — these contain improvements and new methods
+    hf_papers({"operation": "citation_graph", "arxiv_id": "2305.18290", "direction": "citations"})
+    ```
+
+    If a downstream paper reports significantly better results, the sub-agent crawls its citation graph too.
+  </Step>
+
+  <Step title="Read methodology sections">
+    For the most promising papers, the sub-agent fetches the table of contents first, then reads specific sections (typically 3, 4, 5 — Methodology, Experiments, Results) using `hf_papers(operation="read_paper")`.
+
+    ```python
+    # Get TOC first to identify section numbers
+    hf_papers({"operation": "read_paper", "arxiv_id": "2604.01348"})
+
+    # Then read the methodology and experiments sections
+    hf_papers({"operation": "read_paper", "arxiv_id": "2604.01348", "section": "3"})
+    hf_papers({"operation": "read_paper", "arxiv_id": "2604.01348", "section": "4"})
+    ```
+
+    Papers are accessed via ArXiv's HTML renderer (with ar5iv as fallback), so the full text is available — not just the abstract.
+  </Step>
+
+  <Step title="Validate datasets on HF Hub">
+    For the most promising datasets found in the papers, the sub-agent checks that they exist on HF Hub and that their column format matches the training method, using `hf_inspect_dataset`.
+  </Step>
+
+  <Step title="Find working reference implementations">
+    Finally, the sub-agent searches GitHub for working example scripts using `github_find_examples` and reads the actual code with `github_read_file`. This is the implementation basis — ML Intern's internal knowledge of TRL, Transformers, and PEFT APIs is outdated.
+  </Step>
+</Steps>
+
+## Example research prompts
+
+You can trigger the research sub-agent directly by asking ML Intern a research question:
+
+<CodeGroup>
+```bash Research-focused prompts
+ml-intern "what's the best approach for training a small LLM from scratch"
+ml-intern "find papers on efficient fine-tuning techniques for vision models"
+ml-intern "what datasets do researchers use for DPO training on math problems"
+ml-intern "summarize recent results on LoRA vs full fine-tuning for code generation"
+```
+</CodeGroup>
+
+For training tasks, ML Intern automatically invokes research before writing any code — you don't need to ask explicitly. But you can front-load the research conversation to review findings before committing to a direction.
+
+## Deep vs. shallow research
+
+The depth of the research crawl depends on how you phrase your request:
+
+<CardGroup cols={2}>
+  <Card title="Triggers deep research" icon="magnifying-glass-plus">
+    - Asking for "the best" approach or "state of the art"
+    - Mentioning a specific benchmark or target metric
+    - Asking to compare multiple methods
+    - Tasks where you haven't specified a dataset or model
+    - Novel or niche tasks where the right approach isn't obvious
+  </Card>
+  <Card title="Triggers shallow research" icon="magnifying-glass-minus">
+    - Naming a specific paper or approach directly ("use LoRA with rank 16")
+    - Providing a complete dataset and model choice upfront
+    - Simple data processing or inference tasks (not training)
+    - Asking to reproduce a specific result from a paper you cite
+  </Card>
+</CardGroup>
+
+For tasks where you already know the approach, you can tell ML Intern to skip the literature crawl:
+
+```bash
+ml-intern "fine-tune distilbert on stanfordnlp/sst2 using SFT, skip the research step"
+```
+
+<Note>
+  Skipping research means ML Intern bases the training script on its internal knowledge of HF library APIs — which is out of date. You may hit import errors or wrong argument names. The research step exists specifically to avoid this.
+</Note>
+
+## Snippet search and recommendations
+
+Beyond the citation graph, the research sub-agent has two additional tools for finding relevant work:
+
+**Snippet search** (`hf_papers(operation="snippet_search")`) runs semantic search over full-text passages from 12 million+ papers via Semantic Scholar. Useful for finding specific claims across the literature — for example, "does dataset X consistently outperform Y for this task?"
+
+**Recommendations** (`hf_papers(operation="recommend")`) finds papers similar to a given paper or a set of positive examples. The sub-agent uses this to catch relevant work the citation graph might miss.
+
+## How research findings flow into the main conversation
+
+The research sub-agent returns a structured summary to the main agent. This summary includes:
+
+- A ranked recipe table with paper metadata, benchmark scores, dataset paths, and hyperparameters
+- Verified HF Hub dataset paths with column format confirmed
+- Working code patterns extracted from actual GitHub example scripts
+- A recommendation for which recipe to implement first and why
+
+The main agent uses this summary to write the training script and propose the `hf_jobs` call. You see the final summary if you ask ML Intern to "show me what you found" before it starts writing code.

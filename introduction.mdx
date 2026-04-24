@@ -1,0 +1,58 @@
+---
+title: "ML Intern: an autonomous ML engineering agent for HF"
+description: "Learn what ML Intern is, what problems it solves, and how its agentic loop integrates with the Hugging Face ecosystem to automate end-to-end ML workflows."
+---
+
+ML Intern is an open-source CLI agent that autonomously researches, writes, and ships machine learning code using the Hugging Face ecosystem. Instead of switching between paper search, dataset exploration, training scripts, and cloud compute dashboards, you describe what you want in plain language and ML Intern handles the rest — from reading ArXiv papers to pushing trained models to the Hub.
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Research papers" icon="book-open" href="/tools/research">
+    Search ArXiv, read methodology sections, and synthesize training recipes directly from the literature.
+  </Card>
+  <Card title="Train on cloud GPUs" icon="microchip" href="/tools/hf-jobs">
+    Dispatch Python scripts and Docker jobs to Hugging Face Jobs — from T4 to 8×A100 — with a single request.
+  </Card>
+  <Card title="Work with datasets" icon="database" href="/guides/working-with-datasets">
+    Search, inspect, and load Hugging Face datasets for training, fine-tuning, and evaluation.
+  </Card>
+  <Card title="Manage HF repos" icon="code-branch" href="/tools/hf-repos">
+    Upload files, create branches, open pull requests, and manage model and dataset repositories on the Hub.
+  </Card>
+</CardGroup>
+
+## How it works
+
+ML Intern runs an agentic loop that repeatedly calls an LLM (Claude by default, via Anthropic or AWS Bedrock), parses the tool calls it returns, and executes them through a `ToolRouter`. Each iteration follows the same pattern:
+
+1. The LLM receives your message plus the full conversation history and a set of tool specs.
+2. If the LLM returns tool calls, ML Intern checks whether any require your approval (cloud jobs, destructive repo operations, sandbox commands).
+3. Approved calls are executed by the `ToolRouter`, and their results are added back to the conversation context.
+4. The loop continues until the LLM returns a response with no tool calls, signalling it has finished the task.
+
+The loop runs for up to 300 iterations by default (configurable). A built-in doom-loop detector monitors for repeated tool patterns and injects corrective prompts if the agent gets stuck.
+
+### Tool categories
+
+The `ToolRouter` exposes tools across several categories:
+
+| Category | What it covers |
+|---|---|
+| HF docs & research | ArXiv paper search, HF documentation lookup, GitHub code search |
+| HF ecosystem | Model/dataset repos, Hub jobs, repo files, Git operations |
+| Sandbox & local | Local code execution, file operations, reliability checks |
+| Planning | Structured task planning and sub-task tracking |
+| MCP servers | Any tools exposed by MCP servers you configure |
+
+### Context management
+
+ML Intern tracks conversation history in a `ContextManager`. When the context grows beyond 170k tokens, it automatically compacts — summarising older turns — so long tasks don't hit model limits. Sessions can be saved to a Hugging Face dataset repo after each turn, giving you a persistent audit trail.
+
+<Note>
+  ML Intern requires an HF token and an LLM API key (Anthropic or a configured Bedrock profile). If no `HF_TOKEN` is set, the CLI will prompt you to paste one on first launch.
+</Note>
+
+## Next steps
+
+Ready to run your first task? Follow the [quickstart](/quickstart) to install ML Intern and send your first prompt in under five minutes.

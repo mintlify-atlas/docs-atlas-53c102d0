@@ -1,0 +1,94 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "ML Intern",
+  "projectDescription": "An autonomous ML engineer CLI agent that reads research papers, searches datasets, trains models on cloud compute, and ships ML code using the Hugging Face ecosystem.",
+  "theme": "luma",
+  "primaryColor": "#663ebc",
+  "lightColor": "#b49cdc",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/agentic-loop",
+              "concepts/context-management"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "tools/overview",
+              "tools/research",
+              "tools/hf-jobs",
+              "tools/hf-repos",
+              "tools/sandbox",
+              "tools/mcp-servers"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/training-models",
+              "guides/working-with-datasets",
+              "guides/reading-papers",
+              "guides/adding-tools"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/cli",
+              "reference/slash-commands",
+              "reference/events",
+              "reference/hardware"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Autonomous ML engineering via an interactive CLI and headless mode",
+    "Research sub-agent that crawls ArXiv papers and citation graphs",
+    "Cloud training job dispatch to Hugging Face Jobs (CPU & GPU hardware)",
+    "Deep HF ecosystem integration: models, datasets, Spaces, and the HF Hub API",
+    "GitHub code search for real-world implementation examples",
+    "Context auto-compaction to stay within 200k-token context windows",
+    "Doom-loop detector that injects corrective prompts on repeated tool patterns",
+    "MCP server extensibility for adding custom tools",
+    "Slash commands for model switching, reasoning effort, undo, and YOLO mode"
+  ],
+  "publicApiSurface": [
+    "ml-intern (CLI entrypoint, interactive mode)",
+    "ml-intern \"<prompt>\" (headless mode)",
+    "ml-intern --model <model-id>",
+    "ml-intern --max-iterations <n>",
+    "ml-intern --no-stream",
+    "/help, /model, /effort, /yolo, /compact, /undo, /status (slash commands)",
+    "ToolRouter (agent/core/tools.py)",
+    "ToolSpec (agent/core/tools.py)",
+    "create_builtin_tools() (agent/core/tools.py)",
+    "submission_loop() (agent/core/agent_loop.py)",
+    "hf_jobs (tool: run Python scripts or Docker commands on HF compute)",
+    "research (tool: spawn read-only research sub-agent)",
+    "hf_repo_files (tool: upload/delete files in HF repos)",
+    "hf_repo_git (tool: branch, tag, PR, and repo management on HF Hub)",
+    "hf_inspect_dataset (tool: inspect HF datasets)",
+    "hf_papers (tool: search and read ArXiv papers via HF Papers)",
+    "explore_hf_docs / fetch_hf_docs (tools: search and fetch HF documentation)",
+    "github_find_examples / github_read_file / github_list_repos (tools: GitHub code search)"
+  ]
+}

@@ -1,0 +1,162 @@
+---
+title: "ML Intern architecture overview"
+description: "ML Intern uses a queue-based async design to decouple the CLI from the agent loop, keeping the UI responsive while long-running tasks execute in the background."
+---
+
+ML Intern is built around two async queues that separate user-facing concerns from agent execution. The CLI (or any other UI) submits operations into a `submission_queue` and listens for results on an `event_queue`. This means your interface stays responsive even while the agent is mid-way through a multi-step task involving cloud compute or a long LLM chain.
+
+## Component diagram
+
+The diagram below shows how data flows from you through to tool execution and back:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                         User/CLI                            │
+└────────────┬─────────────────────────────────────┬──────────┘
+             │ Operations                          │ Events
+             ↓ (user_input, exec_approval,         ↑
+      submission_queue  interrupt, compact, ...)  event_queue
+             │                                          │
+             ↓                                          │
+┌────────────────────────────────────────────────────┐  │
+│            submission_loop (agent_loop.py)         │  │
+│  ┌──────────────────────────────────────────────┐  │  │
+│  │  1. Receive Operation from queue             │  │  │
+│  │  2. Route to handler (run_agent/compact/...) │  │  │
+│  └──────────────────────────────────────────────┘  │  │
+│                      ↓                             │  │
+│  ┌──────────────────────────────────────────────┐  │  │
+│  │         Handlers.run_agent()                 │  ├──┤
+│  │                                              │  │  │
+│  │  ┌────────────────────────────────────────┐  │  │  │
+│  │  │  Agentic Loop (max 300 iterations)     │  │  │  │
+│  │  │                                        │  │  │  │
+│  │  │  ┌──────────────────────────────────┐  │  │  │  │
+│  │  │  │ Session                          │  │  │  │  │
+│  │  │  │  ┌────────────────────────────┐  │  │  │  │  │
+│  │  │  │  │ ContextManager             │  │  │  │  │  │
+│  │  │  │  │ • Message history          │  │  │  │  │  │
+│  │  │  │  │   (litellm.Message[])      │  │  │  │  │  │
+│  │  │  │  │ • Auto-compaction (170k)   │  │  │  │  │  │
+│  │  │  │  │ • Session upload to HF     │  │  │  │  │  │
+│  │  │  │  └────────────────────────────┘  │  │  │  │  │
+│  │  │  │                                  │  │  │  │  │
+│  │  │  │  ┌────────────────────────────┐  │  │  │  │  │
+│  │  │  │  │ ToolRouter                 │  │  │  │  │  │
+│  │  │  │  │  ├─ HF docs & research     │  │  │  │  │  │
+│  │  │  │  │  ├─ HF repos, datasets,    │  │  │  │  │  │
+│  │  │  │  │  │  jobs, papers           │  │  │  │  │  │
+│  │  │  │  │  ├─ GitHub code search     │  │  │  │  │  │
+│  │  │  │  │  ├─ Sandbox & local tools  │  │  │  │  │  │
+│  │  │  │  │  ├─ Planning               │  │  │  │  │  │
+│  │  │  │  │  └─ MCP server tools       │  │  │  │  │  │
+│  │  │  │  └────────────────────────────┘  │  │  │  │  │
+│  │  │  └──────────────────────────────────┘  │  │  │  │
+│  │  │                                        │  │  │  │
+│  │  │  ┌──────────────────────────────────┐  │  │  │  │
+│  │  │  │ Doom Loop Detector               │  │  │  │  │
+│  │  │  │ • Detects repeated tool patterns │  │  │  │  │
+│  │  │  │ • Injects corrective prompts     │  │  │  │  │
+│  │  │  └──────────────────────────────────┘  │  │  │  │
+│  │  └────────────────────────────────────────┘  │  │  │
+│  └──────────────────────────────────────────────┘  │  │
+└────────────────────────────────────────────────────┴──┘
+```
+
+## The two queues
+
+<CardGroup cols={2}>
+  <Card title="submission_queue" icon="arrow-right-to-bracket">
+    Carries **operations** from any UI into the agent. Supported operation types are `user_input`, `exec_approval`, `interrupt`, `undo`, `compact`, and `shutdown`. The agent loop pulls from this queue one item at a time.
+  </Card>
+  <Card title="event_queue" icon="arrow-right-from-bracket">
+    Carries **events** from the agent back to the UI — things like `assistant_chunk`, `tool_call`, `tool_output`, `approval_required`, `compacted`, and `turn_complete`. Any UI implementation just needs to read from this queue.
+  </Card>
+</CardGroup>
+
+This queue-pair design means you can replace the CLI with a web UI, a REST API, or a programmatic client without changing a single line of agent logic.
+
+## Key components
+
+### submission_loop
+
+`submission_loop` in `agent_loop.py` is the entry point for the agent process. It creates the `Session`, emits a `ready` event once initialized, then sits in a `while session.is_running` loop pulling submissions from `submission_queue` and dispatching them to the right handler.
+
+### Handlers
+
+The `Handlers` class groups the logic for each operation type:
+
+| Handler | Triggered by | What it does |
+|---|---|---|
+| `run_agent` | `USER_INPUT` | Runs the agentic loop until no more tool calls or max iterations |
+| `exec_approval` | `EXEC_APPROVAL` | Executes approved tool calls, injects rejections into context |
+| `undo` | `UNDO` | Removes the last user turn and all messages that follow it |
+| `shutdown` | `SHUTDOWN` | Optionally saves the session to HF, then exits the loop |
+
+Compact is handled inline by `_compact_and_notify` rather than through a dedicated handler class method — it runs automatically before each LLM call when context is near the limit, and also when you send the explicit `COMPACT` operation.
+
+### Session
+
+A `Session` object is created once per `submission_loop` invocation and lives for the lifetime of that agent process. It holds:
+
+- **`context_manager`** — the full message history and compaction logic
+- **`tool_router`** — the registry of all available tools and their handlers
+- **`config`** — model name, max iterations, yolo mode, session saving flags, and more
+- **`event_queue`** — the outbound channel for emitting events back to the UI
+- **`session_id`** — a UUID used for tracing and session uploads
+- **`pending_approval`** — tool calls that are waiting for user confirmation
+- **`_cancelled`** — an `asyncio.Event` that any part of the loop checks before proceeding
+
+### ContextManager
+
+`ContextManager` owns the conversation history as a list of `litellm.Message` objects. It handles auto-compaction at 90% of the model's token limit and can upload completed sessions to a Hugging Face dataset. See [Context management and compaction](/concepts/context-management) for details.
+
+### ToolRouter
+
+`ToolRouter` is the unified registry for every tool the agent can call. It loads built-in tools on startup and optionally connects to one or more MCP servers. At call time it resolves whether to dispatch to a built-in async handler or forward to the MCP client. The full tool set includes:
+
+- HF docs search and fetching
+- Research sub-agent (runs an independent agentic loop for read-only research)
+- Papers, datasets, and HF repo management
+- GitHub code search and file reading
+- Sandbox execution and local filesystem tools
+- Planning tool
+- Any tools exposed by configured MCP servers
+
+## Event reference
+
+Every user-visible agent state change is communicated through an event on `event_queue`. The table below lists all event types:
+
+| Event | Meaning |
+|---|---|
+| `processing` | Agent started processing your input |
+| `ready` | Agent initialized and ready for input |
+| `assistant_chunk` | Streaming token from the LLM |
+| `assistant_message` | Full response text (non-streaming mode) |
+| `assistant_stream_end` | Token stream has finished |
+| `tool_call` | A tool is being called with these arguments |
+| `tool_output` | Result of a tool execution |
+| `tool_log` | Informational log message from a tool or system |
+| `tool_state_change` | Tool execution state changed (approved, rejected, cancelled, running, abandoned) |
+| `approval_required` | Agent needs your confirmation before proceeding |
+| `turn_complete` | Agent finished its turn |
+| `error` | An error occurred |
+| `interrupted` | The agent was interrupted (Ctrl+C or `session.cancel()`) |
+| `compacted` | Context was compacted; includes old and new token counts |
+| `undo_complete` | Undo operation finished |
+| `shutdown` | Agent is shutting down |
+
+<Note>
+  Any UI that consumes the `event_queue` will receive all of these events. The reference CLI in `agent/core/main.py` shows a minimal implementation that handles each type.
+</Note>
+
+## Further reading
+
+<CardGroup cols={2}>
+  <Card title="How the agentic loop works" href="/concepts/agentic-loop">
+    Step-by-step breakdown of the LLM → tool execution → repeat cycle, including doom-loop detection and approval flow.
+  </Card>
+  <Card title="Context management and compaction" href="/concepts/context-management">
+    How conversation history is stored, when auto-compaction fires, and how to trigger it manually.
+  </Card>
+</CardGroup>

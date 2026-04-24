@@ -1,0 +1,191 @@
+---
+title: "Managing Hugging Face Hub models, datasets, and spaces"
+description: "Upload and delete files, manage branches, tags, and pull requests, and create or update model, dataset, and Space repositories on the HF Hub."
+---
+
+ML Intern provides two complementary tools for working with repositories on the Hugging Face Hub. `hf_repo_files` handles file-level operations — reading, uploading, and deleting content — while `hf_repo_git` handles Git-like repository management: branches, tags, pull requests, and repository settings. Both tools work across the three Hub repository types: `model`, `dataset`, and `space`.
+
+## hf_repo_files
+
+The `hf_repo_files` tool reads and writes files in any HF repository. All operations accept a `repo_type` parameter (`model`, `dataset`, or `space`) that defaults to `model`.
+
+### Operations
+
+<Accordion title="list — browse repository contents">
+Returns all files with their sizes and total repository size.
+
+```json
+{
+  "operation": "list",
+  "repo_id": "meta-llama/Llama-2-7b"
+}
+```
+
+You can narrow the listing to a subdirectory with the `path` parameter and target a specific branch or commit with `revision`.
+</Accordion>
+
+<Accordion title="read — read a text file">
+Fetches the content of any text file. Binary files (`.safetensors`, `.bin`) are detected and reported as binary.
+
+```json
+{
+  "operation": "read",
+  "repo_id": "gpt2",
+  "path": "config.json"
+}
+```
+
+Large files are truncated at 50 000 characters by default. Adjust with `max_chars`.
+</Accordion>
+
+<Accordion title="upload — add or update a file">
+Uploads text content to a path in the repository. Creates the file if it does not exist, overwrites it if it does.
+
+```json
+{
+  "operation": "upload",
+  "repo_id": "my-org/my-model",
+  "path": "README.md",
+  "content": "# My Model\n\nA fine-tuned LLaMA 3 8B.",
+  "commit_message": "Add README"
+}
+```
+
+Set `create_pr: true` to open a draft pull request instead of committing directly to `main`:
+
+```json
+{
+  "operation": "upload",
+  "repo_id": "org/model",
+  "path": "config.json",
+  "content": "{ \"hidden_size\": 4096 }",
+  "create_pr": true
+}
+```
+</Accordion>
+
+<Accordion title="delete — remove files">
+Deletes one or more files using path patterns. Wildcards are supported.
+
+```json
+{
+  "operation": "delete",
+  "repo_id": "my-org/my-model",
+  "patterns": ["*.tmp", "logs/"],
+  "commit_message": "Clean up temporary files"
+}
+```
+
+Like uploads, deletions also support `create_pr: true`.
+</Accordion>
+
+### Parameters reference
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `operation` | string | Yes | — | `list`, `read`, `upload`, or `delete` |
+| `repo_id` | string | Yes | — | Repository identifier, e.g. `"username/repo-name"` |
+| `repo_type` | string | No | `"model"` | `"model"`, `"dataset"`, or `"space"` |
+| `revision` | string | No | `"main"` | Branch name, tag, or commit SHA |
+| `path` | string | Varies | — | File path; required for `read` and `upload` |
+| `content` | string | For `upload` | — | Full text content to write |
+| `patterns` | array | For `delete` | — | List of paths or glob patterns to remove |
+| `create_pr` | boolean | No | `false` | Open a draft PR instead of committing directly |
+| `commit_message` | string | No | Auto | Custom commit message |
+| `max_chars` | integer | No | 50 000 | Truncation limit for `read` |
+
+<Warning>
+  `upload` and `delete` require user approval by default because they can overwrite or permanently remove data. Use `create_pr: true` to propose changes safely via a pull request.
+</Warning>
+
+---
+
+## hf_repo_git
+
+The `hf_repo_git` tool handles the repository structure itself: references, pull requests, and repo settings.
+
+### Branch operations
+
+```json
+{ "operation": "create_branch", "repo_id": "my-model", "branch": "experiment-v2" }
+{ "operation": "create_branch", "repo_id": "my-model", "branch": "hotfix", "from_rev": "v1.0" }
+{ "operation": "delete_branch", "repo_id": "my-model", "branch": "experiment-v2" }
+{ "operation": "list_refs",     "repo_id": "my-model" }
+```
+
+`list_refs` returns all branches and tags for the repository.
+
+### Tag operations
+
+```json
+{ "operation": "create_tag", "repo_id": "my-model", "tag": "v1.0", "revision": "main" }
+{ "operation": "delete_tag", "repo_id": "my-model", "tag": "v1.0" }
+```
+
+### Pull request workflow
+
+HF Hub pull requests follow a draft → open → merged flow:
+
+<Steps>
+  <Step title="Create a draft PR">
+    ```json
+    {
+      "operation": "create_pr",
+      "repo_id": "my-org/my-model",
+      "title": "Add LoRA adapter weights",
+      "description": "Fine-tuned on ultrachat_200k"
+    }
+    ```
+    This creates an empty draft PR. The response includes the PR number (e.g. `3`).
+  </Step>
+  <Step title="Add commits via upload">
+    Use `hf_repo_files` upload with `revision: "refs/pr/3"` to add files to the PR branch:
+    ```json
+    {
+      "operation": "upload",
+      "repo_id": "my-org/my-model",
+      "path": "adapter_config.json",
+      "content": "{ ... }",
+      "revision": "refs/pr/3"
+    }
+    ```
+  </Step>
+  <Step title="Publish the PR">
+    Change the status from draft to open so reviewers can see it:
+    ```json
+    {
+      "operation": "change_pr_status",
+      "repo_id": "my-org/my-model",
+      "pr_num": 3,
+      "new_status": "open"
+    }
+    ```
+  </Step>
+  <Step title="Merge when ready">
+    ```json
+    { "operation": "merge_pr", "repo_id": "my-org/my-model", "pr_num": 3 }
+    ```
+  </Step>
+</Steps>
+
+Other PR operations: `list_prs`, `get_pr`, `close_pr`, `comment_pr`.
+
+### Repository management
+
+```json
+{ "operation": "create_repo", "repo_id": "my-org/new-model", "private": true }
+{ "operation": "create_repo", "repo_id": "my-org/my-space", "repo_type": "space", "space_sdk": "gradio" }
+{ "operation": "update_repo", "repo_id": "my-org/my-model", "private": false }
+{ "operation": "update_repo", "repo_id": "my-org/my-model", "gated": "auto" }
+```
+
+For Space creation, `space_sdk` is required and must be one of `gradio`, `streamlit`, `docker`, or `static`.
+
+Gated access options for `update_repo`:
+- `"auto"` — users are granted access instantly after agreeing to conditions
+- `"manual"` — each access request requires manual review
+- `"false"` — removes gating (open access)
+
+<Warning>
+  `delete_branch`, `delete_tag`, `merge_pr`, `create_repo`, and `update_repo` all require user approval. These operations are destructive or create permanent resources.
+</Warning>

@@ -1,97 +1,81 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "ML Intern: autonomous ML engineering agent"
+description: "ML Intern is an open-source CLI agent that reads papers, finds datasets, trains models on HF cloud compute, and ships ML code — all from a single command."
 ---
 
-## Setting up
+ML Intern is your autonomous ML engineering assistant. Give it a task in plain language — "fine-tune Llama on my dataset", "find the best training recipe for image classification", "benchmark this model on GLUE" — and it researches the literature, writes the code, spins up cloud compute on Hugging Face Jobs, and pushes the results to the Hub.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install ML Intern and run your first task in under five minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Configuration" icon="sliders" href="/configuration">
+    Set your API keys, choose a model, and configure MCP servers.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Tools overview" icon="wrench" href="/tools/overview">
+    Explore every built-in tool — from paper search to GPU job dispatch.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Understand the queue-based agentic loop that powers ML Intern.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What ML Intern can do
 
-Everything you need to create world-class documentation.
+ML Intern combines a powerful agentic loop with deep access to the Hugging Face ecosystem. It can autonomously complete end-to-end ML workflows without you writing a single line of code.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Research papers" icon="book-open" href="/tools/research">
+    Crawl ArXiv, read methodology sections, and synthesize training recipes from the literature.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Train on cloud GPUs" icon="microchip" href="/tools/hf-jobs">
+    Dispatch Python scripts and Docker jobs to HF Jobs — from T4 to 8×A100.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Work with datasets" icon="database" href="/guides/working-with-datasets">
+    Search, inspect, and load Hugging Face datasets for training and evaluation.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Manage HF repos" icon="code-branch" href="/tools/hf-repos">
+    Upload files, create branches, open pull requests, and manage model repos on the Hub.
   </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+## Get started in three steps
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Install ML Intern">
+    Clone the repo and install with `uv`:
+
+    ```bash
+    git clone git@github.com:huggingface/ml-intern.git
+    cd ml-intern
+    uv sync
+    uv tool install -e .
+    ```
+  </Step>
+  <Step title="Set your credentials">
+    Create a `.env` file in the project root with your API keys:
+
+    ```bash .env
+    HF_TOKEN=<your-hugging-face-token>
+    ANTHROPIC_API_KEY=<your-anthropic-api-key>
+    GITHUB_TOKEN=<your-github-personal-access-token>
+    ```
+
+    If `HF_TOKEN` is not set, the CLI will prompt you to paste one on first launch.
+  </Step>
+  <Step title="Start your first task">
+    Launch the interactive chat or pass a prompt directly:
+
+    ```bash
+    # Interactive mode
+    ml-intern
+
+    # Headless mode — runs the task and exits
+    ml-intern "fine-tune llama on my dataset"
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  ML Intern uses Claude (via Anthropic or AWS Bedrock) as its default model. You need either an `ANTHROPIC_API_KEY` or a configured Bedrock profile to use it. You can switch models at runtime with the `/model` slash command.
+</Note>

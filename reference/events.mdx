@@ -1,0 +1,213 @@
+---
+title: "Agent event types reference"
+description: "All events emitted by the ml-intern agent via event_queue, with data fields and types. Use this to build custom UIs, API wrappers, or logging integrations."
+---
+
+The agent communicates its state to the UI layer by putting `Event` objects onto an `asyncio.Queue`. Each event has an `event_type` string and an optional `data` dict. If you are building a custom frontend, a web API wrapper, or a logging integration, you consume this queue to react to what the agent is doing.
+
+The CLI's own `event_listener` coroutine in `agent/main.py` is a reference implementation — it handles every event type described below and maps each one to a terminal display action.
+
+## Reading events
+
+Events are instances of the `Event` dataclass defined in `agent/core/session.py`:
+
+```python
+from agent.core.session import Event
+
+@dataclass
+class Event:
+    event_type: str
+    data: Optional[dict[str, Any]] = None
+```
+
+Your consumer reads from the queue in a loop:
+
+```python
+while True:
+    event = await event_queue.get()
+    if event.event_type == "shutdown":
+        break
+    # handle event...
+```
+
+## Event reference
+
+### processing
+
+The agent has received user input and is starting to process it. Fires before the first LLM call of a turn.
+
+| Field | Type | Description |
+|---|---|---|
+| *(none)* | — | No data fields. |
+
+### ready
+
+The agent finished initializing. All tools are loaded and the agent is ready for its first message.
+
+| Field | Type | Description |
+|---|---|---|
+| `tool_count` | `int` | Number of tools that were successfully loaded. |
+
+### assistant_chunk
+
+A streaming token chunk from the LLM. Fires repeatedly during a streaming response, once per chunk returned by the model. Not emitted when `--no-stream` is used.
+
+| Field | Type | Description |
+|---|---|---|
+| `content` | `str` | The text of this token chunk. Concatenate all chunks to reconstruct the full response. |
+
+### assistant_message
+
+A complete, non-streamed LLM response. Fires instead of `assistant_chunk` events when streaming is disabled, or for non-streaming models.
+
+| Field | Type | Description |
+|---|---|---|
+| `content` | `str` | The full text of the assistant's response. |
+
+### assistant_stream_end
+
+The streaming response is finished. Fires after the last `assistant_chunk` event. Use this to trigger any "stream complete" UI state.
+
+| Field | Type | Description |
+|---|---|---|
+| *(none)* | — | No data fields. |
+
+### tool_call
+
+The agent is about to call a tool. Fires before execution begins, so you can display "calling X..." before the result arrives.
+
+| Field | Type | Description |
+|---|---|---|
+| `tool` | `str` | Name of the tool being called (e.g. `"hf_jobs"`, `"research"`). |
+| `arguments` | `dict` | The arguments passed to the tool. |
+
+### tool_output
+
+The result of a tool call.
+
+| Field | Type | Description |
+|---|---|---|
+| `output` | `str` | The formatted output returned by the tool. |
+| `success` | `bool` | Whether the tool call succeeded. `False` indicates the tool returned an error. |
+
+### tool_log
+
+An informational log message emitted by a tool during execution. Research sub-agents emit these frequently with status updates. Other tools emit them for progress messages.
+
+| Field | Type | Description |
+|---|---|---|
+| `tool` | `str` | Name of the tool that emitted this log. |
+| `log` | `str` | The log message text. |
+| `agent_id` | `str` | For research sub-agents, a unique identifier for the parallel sub-agent instance. |
+| `label` | `str` | A human-readable label for the sub-agent (e.g. the research query). |
+
+### tool_state_change
+
+A tool's execution state changed. Currently emitted by `hf_jobs` when a job transitions from submitted to running to a terminal state. The CLI suppresses these from the terminal display; they are more useful for custom UIs that show job status cards.
+
+| Field | Type | Description |
+|---|---|---|
+| `tool_call_id` | `str` | The ID of the tool call this state change belongs to. |
+| `tool` | `str` | Name of the tool (e.g. `"hf_jobs"`). |
+| `state` | `str` | The new state string (e.g. `"running"`, `"completed"`, `"failed"`). |
+| `jobUrl` | `str` | For HF Jobs: URL of the job on huggingface.co. |
+
+### approval_required
+
+The agent needs approval before executing one or more tool calls. Your consumer must respond by submitting an `EXEC_APPROVAL` operation to the submission queue, or the agent will block waiting.
+
+| Field | Type | Description |
+|---|---|---|
+| `tools` | `list[dict]` | Array of tool call objects pending approval. Each has `tool`, `arguments`, and `tool_call_id`. |
+| `count` | `int` | Number of tool calls awaiting approval. |
+
+When yolo mode is active, the event listener auto-approves all items in the batch immediately.
+
+### turn_complete
+
+The agent finished processing the current turn. All tool calls have completed and the LLM has produced its final response.
+
+| Field | Type | Description |
+|---|---|---|
+| `history_size` | `int` or `str` | Number of items currently in the context manager. |
+
+### error
+
+An error occurred during the turn. The turn is considered finished after this event.
+
+| Field | Type | Description |
+|---|---|---|
+| `error` | `str` | Human-readable error message. |
+
+### interrupted
+
+The agent's current turn was cancelled, typically because the user pressed Ctrl+C. The turn is finished; the agent is ready for new input.
+
+| Field | Type | Description |
+|---|---|---|
+| *(none)* | — | No data fields. |
+
+### compacted
+
+The context window was compacted — older messages were summarized to reduce token usage. Fires after both automatic compaction and manual `/compact` commands.
+
+| Field | Type | Description |
+|---|---|---|
+| `old_tokens` | `int` | Token count before compaction. |
+| `new_tokens` | `int` | Token count after compaction. |
+
+### undo_complete
+
+An undo operation finished. The context has been rolled back to the state before the previous turn.
+
+| Field | Type | Description |
+|---|---|---|
+| *(none)* | — | No data fields. |
+
+### shutdown
+
+The agent is shutting down and will emit no further events. Use this as the signal to stop consuming the queue and clean up.
+
+| Field | Type | Description |
+|---|---|---|
+| *(none)* | — | No data fields. |
+
+## Building a custom consumer
+
+Here is a minimal example of a custom event consumer that could serve as the foundation for a web frontend or API server:
+
+```python
+import asyncio
+from agent.core.session import Event
+
+async def my_event_consumer(event_queue: asyncio.Queue) -> None:
+    async for event in iter(event_queue.get, None):
+        match event.event_type:
+            case "ready":
+                tool_count = event.data.get("tool_count", 0)
+                print(f"Agent ready with {tool_count} tools")
+
+            case "assistant_chunk":
+                print(event.data["content"], end="", flush=True)
+
+            case "assistant_stream_end":
+                print()  # newline after stream
+
+            case "tool_call":
+                tool = event.data["tool"]
+                print(f"Calling tool: {tool}")
+
+            case "approval_required":
+                # Your UI must handle this and submit EXEC_APPROVAL
+                tools = event.data["tools"]
+                print(f"Approval needed for {len(tools)} tool(s)")
+
+            case "turn_complete":
+                print("Turn complete")
+
+            case "error":
+                print(f"Error: {event.data['error']}")
+
+            case "shutdown":
+                break
+```

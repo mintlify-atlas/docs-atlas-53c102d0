@@ -1,0 +1,185 @@
+---
+title: "Add custom tools to ML Intern"
+description: "Extend ML Intern with Python handlers registered as built-in tools, or connect external services via MCP servers configured in the agent JSON config."
+---
+
+ML Intern's tool system has two extension points: **built-in tools** written as Python async functions and registered in `agent/core/tools.py`, and **MCP servers** configured in `configs/main_agent_config.json`. Both approaches make tools available to the LLM in exactly the same way — the agent reads the tool's `description` to decide when and how to call it.
+
+## Adding built-in tools
+
+Built-in tools are Python async functions paired with a `ToolSpec` that describes them to the LLM. You define the spec and handler, then register both in `create_builtin_tools()`.
+
+### Step 1: Define a ToolSpec and handler
+
+A `ToolSpec` has four fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `str` | The function name the LLM uses to call the tool |
+| `description` | `str` | Plain-English description the LLM reads to decide when to call this tool |
+| `parameters` | `dict` | JSON Schema object describing the tool's input parameters |
+| `handler` | `async callable` | The function that executes when the LLM calls the tool |
+
+The handler must be an `async` function that accepts `arguments: dict[str, Any]` and returns `tuple[str, bool]` — the string output and a success flag.
+
+Here is the minimal pattern from the README:
+
+```python
+# In agent/core/tools.py or a new file in agent/tools/
+
+from agent.core.tools import ToolSpec
+
+YOUR_TOOL_SPEC = {
+    "name": "your_tool",
+    "description": "What your tool does",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "param": {"type": "string", "description": "Parameter description"}
+        },
+        "required": ["param"]
+    }
+}
+
+async def your_async_handler(arguments: dict) -> tuple[str, bool]:
+    param = arguments.get("param", "")
+    # your logic here
+    result = f"Processed: {param}"
+    return result, True  # (output_string, success)
+```
+
+The handler can optionally accept a `session` argument (injected automatically by `ToolRouter.call_tool`) to access the HF token, sandbox, or event queue:
+
+```python
+async def your_async_handler(arguments: dict, session=None) -> tuple[str, bool]:
+    hf_token = session.hf_token if session else None
+    # use hf_token for authenticated API calls
+    return "done", True
+```
+
+### Step 2: Register the tool in create_builtin_tools()
+
+Open `agent/core/tools.py` and add your tool to the list returned by `create_builtin_tools()`:
+
+```python
+def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
+    """Create built-in tool specifications"""
+    # in order of importance
+    tools = [
+        ToolSpec(
+            name="your_tool",
+            description="What your tool does",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "param": {"type": "string", "description": "Parameter description"}
+                },
+                "required": ["param"]
+            },
+            handler=your_async_handler
+        ),
+        # ... existing tools
+    ]
+```
+
+Tools are listed in order of importance — the LLM sees them in this order. Place your tool before the existing entries if you want it prioritized.
+
+### The ToolRouter registers and calls all tools
+
+The `ToolRouter` class in `agent/core/tools.py` loads all built-in tools at startup via `create_builtin_tools()` and calls handlers via `ToolRouter.call_tool()`. You don't need to modify the router itself — just add to the list.
+
+```python
+class ToolRouter:
+    def __init__(self, mcp_servers, hf_token=None, local_mode=False):
+        self.tools: dict[str, ToolSpec] = {}
+        for tool in create_builtin_tools(local_mode=local_mode):
+            self.register_tool(tool)
+```
+
+## Adding MCP servers
+
+MCP (Model Context Protocol) servers expose tools over HTTP that ML Intern connects to at startup. You configure them in `configs/main_agent_config.json`.
+
+### Configuration format
+
+```json
+{
+  "model_name": "anthropic/claude-sonnet-4-5-20250929",
+  "mcpServers": {
+    "your-server-name": {
+      "transport": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${YOUR_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+The key fields for each server:
+
+| Field | Description |
+|---|---|
+| `transport` | Connection type. Use `"http"` for HTTP/HTTPS servers. |
+| `url` | The MCP server endpoint URL. |
+| `headers` | Optional HTTP headers. Used for authentication. |
+
+### Environment variable substitution
+
+Values like `${YOUR_TOKEN}` in the config are automatically substituted from your `.env` file or shell environment at startup. This keeps credentials out of the config file:
+
+```bash
+# .env
+YOUR_TOKEN=sk-your-secret-token
+```
+
+```json
+{
+  "mcpServers": {
+    "my-service": {
+      "transport": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${YOUR_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+The `HF_TOKEN` is also automatically added to the headers of every MCP server — you don't need to include it explicitly.
+
+### Blocked tool names
+
+Some tool names are reserved and cannot be provided by MCP servers. The `NOT_ALLOWED_TOOL_NAMES` list in `agent/core/tools.py` defines which names are blocked:
+
+```python
+NOT_ALLOWED_TOOL_NAMES = ["hf_jobs", "hf_doc_search", "hf_doc_fetch", "hf_whoami"]
+```
+
+If an MCP server exposes a tool with one of these names, ML Intern logs a warning and skips it. The built-in versions of these tools take precedence.
+
+## Tips for writing good tool descriptions
+
+The LLM reads the `description` field to decide when to call your tool, what arguments to pass, and how to interpret the result. A well-written description is the most important part of a tool.
+
+<Accordion title="Explain when to call the tool, not just what it does">
+  Instead of "Fetches data from the API," write "Use this to retrieve user account details when the conversation references a specific account ID. Do not call this for general account questions — use the search tool instead." The LLM needs to know the calling conditions, not just the capability.
+</Accordion>
+
+<Accordion title="Describe the output format explicitly">
+  Tell the LLM what it will receive back: "Returns a JSON object with fields `id`, `status`, and `created_at`." This helps the LLM parse and use the result correctly without trial and error.
+</Accordion>
+
+<Accordion title="Include examples in the description for complex parameters">
+  For parameters with non-obvious formats, add an inline example: `"Hardware type. Examples: 'cpu-basic', 'a10g-large', 'a100-large'."` The LLM learns valid values from examples faster than from enum lists.
+</Accordion>
+
+<Accordion title="State mutual exclusions and required combos">
+  If two parameters are mutually exclusive (like `script` and `command` in `hf_jobs`), say so explicitly: "'script' and 'command' are mutually exclusive — provide exactly one." The LLM will not infer this from the JSON Schema alone.
+</Accordion>
+
+<Accordion title="Mention side effects and irreversibility">
+  For tools that modify state, warn the LLM: "This cancels the job permanently — it cannot be resumed." This triggers the approval flow in the agentic loop, which pauses and asks for user confirmation before executing.
+</Accordion>

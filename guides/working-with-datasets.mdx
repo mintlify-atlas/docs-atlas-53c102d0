@@ -1,0 +1,116 @@
+---
+title: "Search and use Hugging Face datasets"
+description: "Find datasets on the HF Hub by task or keyword, inspect their schema and sample rows, and pipe them directly into ML Intern training jobs."
+---
+
+ML Intern can search for datasets across the Hugging Face Hub, inspect any dataset's schema and sample rows before you write a line of training code, and reference your own private or public datasets in any job. This guide explains how dataset discovery and inspection work, and how to write prompts that get ML Intern to the right dataset quickly.
+
+## Searching for datasets
+
+When you describe your task, ML Intern's research sub-agent searches for matching datasets on HF Hub as part of its literature crawl. You can also trigger dataset search directly:
+
+<CodeGroup>
+```bash Find datasets for a specific task
+ml-intern "find bird image classification datasets"
+ml-intern "what datasets are available for medical question answering"
+ml-intern "find a dataset for DPO training on coding tasks"
+```
+</CodeGroup>
+
+ML Intern combines two signals to find the best match:
+
+1. **Paper-linked datasets** — the research sub-agent reads methodology sections of relevant papers and finds datasets linked to those papers via `hf_papers(operation="find_datasets")`. These are datasets the paper's authors actually used, so the format is known to work for the training method.
+2. **Direct Hub search** — for straightforward requests, ML Intern searches the Hub by task tag, keyword, or dataset name.
+
+<Tip>
+  Describing the task rather than the dataset name often returns better results. "Find datasets for training a small sentiment classifier" gives ML Intern enough context to filter by task and column format, not just keyword match.
+</Tip>
+
+## Inspecting a dataset with hf_inspect_dataset
+
+The `hf_inspect_dataset` tool fetches everything ML Intern needs to know about a dataset in a single call — no browsing the Hub UI required. ML Intern calls it automatically before any training job, but you can also ask for it directly:
+
+<CodeGroup>
+```bash Inspect examples
+ml-intern "inspect the wikitext dataset"
+ml-intern "show me the schema and sample rows for stanfordnlp/imdb"
+ml-intern "what columns does HuggingFaceH4/ultrachat_200k have"
+```
+</CodeGroup>
+
+### What hf_inspect_dataset returns
+
+The tool makes parallel API calls to assemble a complete picture:
+
+<CardGroup cols={2}>
+  <Card title="Status" icon="circle-check">
+    Whether the dataset is valid and what features are available (viewer, preview, search, filter, statistics).
+  </Card>
+  <Card title="Structure" icon="table">
+    All configs and splits in a table — for example, `default / train`, `default / validation`, `default / test`.
+  </Card>
+  <Card title="Schema" icon="code">
+    Column names and types for the selected config. ClassLabel columns show all class names.
+  </Card>
+  <Card title="Sample rows" icon="list">
+    Up to 10 rows from the selected split, with long values truncated for readability. For `messages` columns, it also shows the role structure and an example message.
+  </Card>
+</CardGroup>
+
+It also returns the Parquet file breakdown (file count and size per split), which is useful for estimating training time.
+
+### Column format requirements by training method
+
+ML Intern uses `hf_inspect_dataset` to verify that the dataset's column names match what the trainer expects. Training fails with a `KeyError` if they don't:
+
+| Training method | Required columns |
+|---|---|
+| SFT | `messages`, `text`, or `prompt` + `completion` |
+| DPO | `prompt`, `chosen`, `rejected` |
+| GRPO | `prompt` |
+
+<Warning>
+  All datasets for HF training must be in conversational ChatML format to be compatible with TRL and Transformers trainers. If the dataset you found has a different format, ML Intern will write a preprocessing step to convert it — but you need to confirm the target format first.
+</Warning>
+
+## How datasets flow into training jobs
+
+Once ML Intern identifies and inspects a dataset, it:
+
+1. Passes the dataset's Hub path (e.g., `stanfordnlp/imdb`) into the training script as the `dataset_name` argument
+2. Verifies the split names from the inspection output so the script loads the correct train/validation splits
+3. Adds any necessary column mapping or preprocessing if the raw columns don't match the trainer's expected format
+
+Private and gated datasets work automatically — `HF_TOKEN` is injected into job secrets so the training script can load them without any extra configuration.
+
+## Using your own dataset
+
+You can reference any dataset you own on the Hub directly in your prompt:
+
+<CodeGroup>
+```bash Reference your own dataset
+ml-intern "fine-tune distilbert on my-username/my-sentiment-dataset"
+ml-intern "train a classifier on my private dataset at acme-corp/internal-reviews"
+ml-intern "SFT llama-3 on acme-corp/support-conversations, train split only"
+```
+</CodeGroup>
+
+ML Intern will call `hf_inspect_dataset` on your dataset to verify the column format before writing the training script. If the columns don't match the training method you requested, it will propose a preprocessing step and ask for your confirmation before continuing.
+
+## Tips for describing what you need
+
+<Accordion title="Name the task, not the dataset">
+  "I need a dataset for binary sentiment classification with at least 10k examples" is more useful than "find a sentiment dataset." ML Intern can filter by task, size, and format when you give it constraints.
+</Accordion>
+
+<Accordion title="Mention the training method alongside the dataset">
+  "Find a dataset suitable for DPO fine-tuning on coding tasks" tells ML Intern to look for datasets with `prompt`, `chosen`, and `rejected` columns — not just any coding dataset.
+</Accordion>
+
+<Accordion title="Specify the language or domain if it matters">
+  "French medical QA dataset" or "English news summarization dataset" significantly narrows the search. Without a language constraint, ML Intern defaults to English.
+</Accordion>
+
+<Accordion title="Ask for a sample before committing to training">
+  "Show me 5 sample rows from the train split of HuggingFaceH4/ultrachat_200k" runs `hf_inspect_dataset` with `sample_rows=5` and shows you what the data actually looks like before you approve a training job.
+</Accordion>

@@ -1,0 +1,114 @@
+---
+title: "Context management and compaction"
+description: "ML Intern stores all messages in a ContextManager and auto-compacts at 90% of the model context limit to keep long tasks within the context window."
+---
+
+Every message you send, every LLM response, and every tool result is stored in a `ContextManager` instance that lives inside the active `Session`. This history is what the model sees on every LLM call. Because context windows are finite, ML Intern includes an automatic compaction system that summarizes old messages when the history grows large — and a manual `/compact` command for when you want to trigger it yourself.
+
+## What the ContextManager stores
+
+The `ContextManager` (in `agent/context_manager/manager.py`) keeps a flat list of `litellm.Message` objects:
+
+| Position | Role | Content |
+|---|---|---|
+| 0 (always) | `system` | The system prompt, rendered from a Jinja2/YAML template with date, time, timezone, HF username, and tool specs baked in |
+| 1 | `user` | Your first message (the task prompt — never summarized away) |
+| … | `assistant` / `user` / `tool` | The ongoing conversation and tool results |
+
+The `add_message()` method appends to this list. When a LLM response includes a `usage.total_tokens` count, that value updates `running_context_usage` — the counter that drives the compaction gate.
+
+## Auto-compaction
+
+Auto-compaction fires automatically at the top of each agentic-loop iteration, before the LLM call. The trigger condition is:
+
+```
+running_context_usage > model_max_tokens × 0.90
+```
+
+The 90% threshold gives the model enough headroom to generate a full response on the next turn without hitting the hard ceiling. The `model_max_tokens` value comes from `litellm.get_model_info()` for the active model, so it adjusts automatically when you switch models with `/model`.
+
+<Note>
+  The default model context window used as fallback when `litellm` doesn't have information for a given model is **200,000 tokens**. Auto-compaction for that model therefore triggers at **170,000 tokens** — which is the figure referenced in the README.
+</Note>
+
+### What compaction does
+
+When compaction runs, the `ContextManager.compact()` method:
+
+<Steps>
+  <Step title="Identifies messages to summarize">
+    It preserves the system message, your very first user message (the original task), and the most recent `untouched_messages` messages (default: 5). Everything in between is the candidate set for summarization.
+  </Step>
+  <Step title="Calls the LLM for a summary">
+    The candidate messages are sent to the LLM with a summarization prompt asking for a concise summary of key decisions, the reasoning behind them, problems solved, and context needed to continue. The summary is capped at `compact_size` tokens (10% of `model_max_tokens` by default).
+  </Step>
+  <Step title="Reconstructs the history">
+    The message list is rebuilt as: `[system] + [first user message] + [summary assistant message] + [recent messages]`. The running token count is recalculated using `litellm.token_counter` so subsequent compaction decisions are accurate.
+  </Step>
+  <Step title="Emits a compacted event">
+    A `compacted` event is sent on the `event_queue` with the old and new token counts. The UI can use this to show a compaction indicator.
+  </Step>
+</Steps>
+
+<Tip>
+  Compaction always preserves your original task prompt. The model will never lose sight of what you asked it to do, even after many rounds of compaction in a long session.
+</Tip>
+
+## Manual compaction with /compact
+
+You can trigger compaction at any time with the `/compact` slash command. This sends a `COMPACT` operation directly to the `submission_queue`, which calls `_compact_and_notify()` — the same function the agentic loop uses internally.
+
+Use `/compact` when:
+- You are about to start a new sub-task and want to clear accumulated noise from the history.
+- Context usage is high but you want to compact before the automatic threshold is reached.
+- You want a clean summary mid-session for readability.
+
+## Undoing the last turn
+
+The `/undo` command removes the most recent complete turn from the message history. A "turn" is your last user message and everything the agent produced after it — assistant messages, tool calls, and tool results.
+
+Internally, `ContextManager.undo_last_turn()` pops messages from the end of `items` until it removes a `role="user"` message. The system message at index 0 is never removed. After the messages are popped, an `undo_complete` event is emitted.
+
+<Warning>
+  Undo only affects the in-memory message history for the current session. If session saving is enabled and the session was already auto-saved before you ran `/undo`, the saved file on Hugging Face will still contain the removed turn.
+</Warning>
+
+## Session upload to Hugging Face
+
+ML Intern can save the full session trajectory (all messages and events) to a Hugging Face dataset repo after each session. This is controlled by two config fields in `configs/main_agent_config.json`:
+
+```json
+{
+  "save_sessions": true,
+  "session_dataset_repo": "your-username/your-dataset-repo"
+}
+```
+
+When `save_sessions` is `true`:
+
+- The session is saved **locally** first as a JSON file in `session_logs/` (fast, synchronous).
+- A **detached subprocess** (`session_uploader.py`) handles the upload to the HF dataset repo in the background — the agent loop is not blocked.
+- If a previous upload failed (for example due to a network error), the uploader retries those pending files at the start of the next session.
+- **Auto-save** runs every `auto_save_interval` turns (configurable) so you don't lose work if the session is interrupted.
+- An **emergency save** runs in the `finally` block of `submission_loop` if the loop exits unexpectedly without going through the normal `SHUTDOWN` operation.
+
+The saved trajectory includes the session ID, start/end timestamps, model name, the full message history, and every event that was emitted during the session.
+
+<Note>
+  If `HF_TOKEN` is not set, uploads are skipped and a warning is logged. The local JSON file in `session_logs/` is always written regardless.
+</Note>
+
+## Context window behavior by model
+
+The `model_max_tokens` value is looked up dynamically when a `Session` is created and when you switch models with `/model`. This means:
+
+- Switching to a model with a larger context window (for example, Claude Opus 4.6 at 1M tokens) raises the compaction threshold proportionally.
+- Switching to a smaller model lowers the threshold, and compaction may fire immediately on the next iteration if the current history already exceeds the new limit.
+
+The `ContextManager.update_model()` path (called by `Session.update_model()`) updates `model_max_tokens` in place so the compaction gate is always calibrated to the active model.
+
+## Dangling tool-call patching
+
+Before every LLM call, `get_messages()` runs `_patch_dangling_tool_calls()`. This scans for any assistant message with `tool_calls` that has no matching `role="tool"` result — which can happen if a session was interrupted mid-execution. Stub tool results are injected so the message list stays valid for the LLM API.
+
+This is purely defensive: you should never see the LLM complain about mismatched tool-call IDs in a normal session.
